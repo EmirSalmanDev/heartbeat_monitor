@@ -1,1 +1,15 @@
+node_modules/
+dist/
 .env
+*.env.local
+.pnpm-store/
+coverage/
+*.log
+.DS_Store
+
+# Prisma
+packages/db/generated/
+
+# Docker volumes
+postgres_data/
+redis_data/
