@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  monitors Monitor[]
+
+  @@map("users")
+}
+
+// ─── Monitor ──────────────────────────────────────────────────────────────────
+
+enum MonitorStatus {
+  ACTIVE
+  PAUSED
+}
+
+model Monitor {
+  id           String        @id @default(cuid())
+  userId       String        @map("user_id")
+  name         String
+  url          String
+  intervalSecs Int           @default(60) @map("interval_secs")
+  status       MonitorStatus @default(ACTIVE)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  checks Check[]
+  alerts Alert[]
+
+  @@index([userId])
+  @@map("monitors")
+}
+
+// ─── Check ────────────────────────────────────────────────────────────────────
+
+enum CheckResult {
+  UP
+  DOWN
+}
+
+model Check {
+  id         String      @id @default(cuid())
+  monitorId  String      @map("monitor_id")
+  result     CheckResult
+  statusCode Int?        @map("status_code")
+  latencyMs  Int?        @map("latency_ms")
+  errorMsg   String?     @map("error_msg")
+  checkedAt  DateTime    @default(now()) @map("checked_at")
+
+  monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  // Son check'leri hızlı çekmek için composite index
+  @@index([monitorId, checkedAt(sort: Desc)])
+  @@map("checks")
+}
+
+// ─── Alert ────────────────────────────────────────────────────────────────────
+
+enum AlertType {
+  DOWN
+  RECOVERED
+}
+
+model Alert {
+  id        String    @id @default(cuid())
+  monitorId String    @map("monitor_id")
+  type      AlertType
+  sentAt    DateTime  @default(now()) @map("sent_at")
+
+  monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@index([monitorId])
+  @@map("alerts")
+}
