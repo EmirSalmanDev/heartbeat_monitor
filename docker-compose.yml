@@ -49,6 +49,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    expose:
+      - "3001"
     networks:
       - sentinel_net
 
