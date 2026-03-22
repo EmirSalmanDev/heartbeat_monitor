@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@sentinel/db";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { UnauthorizedError, ValidationError } from "@sentinel/shared";
