@@ -51,7 +51,8 @@ RUN pnpm install --frozen-lockfile --prod
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 
-# Copy Prisma client
+# Copy generated Prisma client and engine files
+COPY --from=builder /app/packages/db/generated ./packages/db/generated
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 EXPOSE 3001
