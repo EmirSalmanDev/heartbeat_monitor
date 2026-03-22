@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
 import { NotFoundError, ForbiddenError } from "@sentinel/shared";
 import { QueueService } from "./QueueService";
