@@ -10,7 +10,10 @@ export class MonitorService {
     private queue: QueueService,
   ) {}
 
-  async create(data: { url: string; intervalSeconds: number }, userId: string) {
+  async create(
+    data: { name: string; url: string; intervalSecs: number },
+    userId: string,
+  ) {
     const monitor = await this.prisma.monitor.create({
       data: { ...data, userId },
     });
@@ -19,7 +22,7 @@ export class MonitorService {
     await this.queue.scheduleMonitor(
       monitor.id,
       monitor.url,
-      monitor.intervalSeconds,
+      monitor.intervalSecs,
     );
 
     return monitor;
@@ -51,7 +54,7 @@ export class MonitorService {
     const cached = await this.redis.get(`current_status:${monitorId}`);
     if (cached) return JSON.parse(cached);
 
-    const latest = await this.prisma.heartbeat.findFirst({
+    const latest = await this.prisma.check.findFirst({
       where: { monitorId },
       orderBy: { checkedAt: "desc" },
     });

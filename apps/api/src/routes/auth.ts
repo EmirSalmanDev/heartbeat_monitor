@@ -1,18 +1,8 @@
 import { Router } from "express";
-import { z } from "zod";
 import { AuthService } from "../services/AuthService";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { createAuthMiddleware } from "../middleware/authMiddleware";
-
-const LoginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-});
-
-const RegisterSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8, "Password must be at least 8 characters"),
-});
+import { LoginSchema, RegisterSchema } from "@sentinel/shared";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,

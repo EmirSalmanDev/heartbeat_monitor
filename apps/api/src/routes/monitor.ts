@@ -1,14 +1,9 @@
 import { Router } from "express";
-import { z } from "zod";
 import { MonitorService } from "../services/MonitorService";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { createAuthMiddleware } from "../middleware/authMiddleware";
 import { AuthService } from "../services/AuthService";
-
-const CreateMonitorSchema = z.object({
-  url: z.string().url("Must be a valid URL"),
-  intervalSeconds: z.number().int().min(30).max(86400).default(60),
-});
+import { CreateMonitorSchema } from "@sentinel/shared";
 
 export function createMonitorRouter(
   monitorService: MonitorService,

@@ -12,11 +12,11 @@ export class AuthService {
 
     const hashed = await bcrypt.hash(password, 12);
     const user = await this.prisma.user.create({
-      data: { email, password: hashed },
+      data: { email, passwordHash: hashed },
     });
 
     // Never return the password hash
-    const { password: _, ...safeUser } = user;
+    const { passwordHash: _, ...safeUser } = user;
     return safeUser;
   }
 
@@ -27,7 +27,7 @@ export class AuthService {
     const dummyHash =
       "$2b$12$LqCimMbCJpR8KqJtH5VJFeTLpBBNkTJMjEOBL3qkRRdXlWC1a0Hry";
     const valid = user
-      ? await bcrypt.compare(password, user.password)
+      ? await bcrypt.compare(password, user.passwordHash)
       : await bcrypt.compare(password, dummyHash).then(() => false);
 
     if (!user || !valid) throw new UnauthorizedError();
