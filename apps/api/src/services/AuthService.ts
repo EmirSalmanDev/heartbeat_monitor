@@ -25,7 +25,7 @@ export class AuthService {
     // Constant-time comparison: always call bcrypt.compare even if user not found
     // to prevent timing-based user enumeration
     const dummyHash =
-      "$2b$12$invalidhashfortimingprotection000000000000000000001477";
+      "$2b$12$LqCimMbCJpR8KqJtH5VJFeTLpBBNkTJMjEOBL3qkRRdXlWC1a0Hry";
     const valid = user
       ? await bcrypt.compare(password, user.password)
       : await bcrypt.compare(password, dummyHash).then(() => false);

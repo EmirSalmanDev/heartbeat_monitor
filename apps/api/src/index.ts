@@ -7,7 +7,7 @@ import { QueueService } from "./services/QueueService";
 import { MonitorService } from "./services/MonitorService";
 import { AuthService } from "./services/AuthService";
 import { createAuthRouter } from "./routes/auth";
-import { createMonitorRouter } from "./routes/monitors";
+import { createMonitorRouter } from "./routes/monitor";
 import { errorHandler } from "./middleware/errorHandler";
 
 const app = express();
