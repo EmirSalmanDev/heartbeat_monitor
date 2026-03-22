@@ -19,8 +19,11 @@ export function createAuthRouter(authService: AuthService) {
     "/register",
     asyncHandler(async (req, res) => {
       const { email, password } = RegisterSchema.parse(req.body);
-      const user = await authService.register(email, password);
-      res.status(201).json({ message: "User created", user });
+      const { passwordHash: _, ...userDto } = await authService.register(
+        email,
+        password,
+      );
+      res.status(201).json({ message: "User created", user: userDto });
     }),
   );
 

@@ -1,12 +1,16 @@
 import { PrismaClient } from "@sentinel/db";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { UnauthorizedError, ValidationError } from "@sentinel/shared";
+import {
+  UnauthorizedError,
+  ValidationError,
+  type UserDto,
+} from "@sentinel/shared";
 
 export class AuthService {
   constructor(private prisma: PrismaClient) {}
 
-  async register(email: string, password: string) {
+  async register(email: string, password: string): Promise<UserDto> {
     const exists = await this.prisma.user.findUnique({ where: { email } });
     if (exists) throw new ValidationError("Email already in use");
 

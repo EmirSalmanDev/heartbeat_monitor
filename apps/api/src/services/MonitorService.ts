@@ -18,7 +18,7 @@ export class MonitorService {
       data: { ...data, userId },
     });
 
-    // Schedule repeating BullMQ job — Phase 3 Worker will consume it
+    // Schedule repeating BullMQ job — Worker will consume it
     await this.queue.scheduleMonitor(
       monitor.id,
       monitor.url,
