@@ -25,16 +25,12 @@ export class QueueService {
     });
   }
 
-  async scheduleMonitor(
-    monitorId: string,
-    url: string,
-    intervalSeconds: number,
-  ) {
+  async scheduleMonitor(monitorId: string, url: string, intervalSecs: number) {
     await this.queue.add(
       "ping",
       { monitorId, url },
       {
-        repeat: { every: intervalSeconds * 1000 },
+        repeat: { every: intervalSecs * 1000 },
         jobId: `monitor-${monitorId}`, // Stable jobId prevents duplicate schedules on restart
       },
     );

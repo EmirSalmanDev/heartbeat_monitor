@@ -1,14 +1,14 @@
 import "dotenv/config";
 import express from "express";
 import cookieParser from "cookie-parser";
-import { prisma } from "./lib/prisma";
-import { redis } from "./lib/redis";
-import { QueueService } from "./services/QueueService";
-import { MonitorService } from "./services/MonitorService";
-import { AuthService } from "./services/AuthService";
-import { createAuthRouter } from "./routes/auth";
-import { createMonitorRouter } from "./routes/monitor";
-import { errorHandler } from "./middleware/errorHandler";
+import { prisma } from "./lib/prisma.js";
+import { redis } from "./lib/redis.js";
+import { QueueService } from "./services/QueueService.js";
+import { MonitorService } from "./services/MonitorService.js";
+import { AuthService } from "./services/AuthService.js";
+import { createAuthRouter } from "./routes/auth.js";
+import { createMonitorRouter } from "./routes/monitor.js";
+import { errorHandler } from "./middleware/errorHandler.js";
 
 const app = express();
 
@@ -43,6 +43,6 @@ app.listen(PORT, () => {
 process.on("SIGTERM", async () => {
   console.log("[API] SIGTERM received — shutting down gracefully");
   await prisma.$disconnect();
-  redis.quit();
+  await redis.quit();
   process.exit(0);
 });

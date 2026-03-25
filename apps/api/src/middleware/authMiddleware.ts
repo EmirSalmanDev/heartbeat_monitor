@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { AuthService } from "../services/AuthService";
+import { AuthService } from "../services/AuthService.js";
 import { UnauthorizedError } from "@sentinel/shared";
 
 // Extend Express Request so downstream handlers get req.userId with full type-safety

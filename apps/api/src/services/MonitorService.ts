@@ -1,7 +1,11 @@
 import { PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
-import { NotFoundError, ForbiddenError } from "@sentinel/shared";
-import { QueueService } from "./QueueService";
+import {
+  NotFoundError,
+  ForbiddenError,
+  type CurrentStatus,
+} from "@sentinel/shared";
+import { QueueService } from "./QueueService.js";
 
 export class MonitorService {
   constructor(
@@ -18,7 +22,7 @@ export class MonitorService {
       data: { ...data, userId },
     });
 
-    // Schedule repeating BullMQ job — Phase 3 Worker will consume it
+    // Schedule repeating BullMQ job — Worker will consume it
     await this.queue.scheduleMonitor(
       monitor.id,
       monitor.url,
@@ -45,14 +49,17 @@ export class MonitorService {
   /**
    * Redis cache-aside for current status.
    * PingService (Worker) writes this key after every ping with TTL 90s.
-   * Cache miss falls back to last Heartbeat in Postgres and re-warms the cache.
+   * Cache miss falls back to the latest Check record in Postgres and re-warms the cache.
    */
-  async getStatus(monitorId: string, userId: string) {
+  async getStatus(
+    monitorId: string,
+    userId: string,
+  ): Promise<CurrentStatus | null> {
     // Ownership check first
     await this.findById(monitorId, userId);
 
     const cached = await this.redis.get(`current_status:${monitorId}`);
-    if (cached) return JSON.parse(cached);
+    if (cached) return JSON.parse(cached) as CurrentStatus;
 
     const latest = await this.prisma.check.findFirst({
       where: { monitorId },
@@ -61,17 +68,26 @@ export class MonitorService {
 
     if (!latest) return null;
 
-    // Re-warm cache (TTL 90s — slightly longer than default 60s ping interval)
+    // Normalize to CurrentStatus DTO — keeps checkedAt as ISO string
+    // consistent with the cache hit path
+    const currentStatus: CurrentStatus = {
+      result: latest.result,
+      statusCode: latest.statusCode,
+      latencyMs: latest.latencyMs,
+      checkedAt: latest.checkedAt.toISOString(),
+    };
+
+    // Re-warm cache
     await this.redis.setex(
       `current_status:${monitorId}`,
       90,
-      JSON.stringify(latest),
+      JSON.stringify(currentStatus),
     );
-    return latest;
+    return currentStatus;
   }
 
   async delete(id: string, userId: string): Promise<void> {
-    await this.findById(id, userId); // throws NotFoundError / ForbiddenError
+    await this.findById(id, userId);
 
     await this.queue.removeMonitor(id);
     await this.prisma.monitor.delete({ where: { id } });

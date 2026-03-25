@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { AuthService } from "../services/AuthService";
-import { asyncHandler } from "../middleware/asyncHandler";
-import { createAuthMiddleware } from "../middleware/authMiddleware";
+import { AuthService } from "../services/AuthService.js";
+import { asyncHandler } from "../middleware/asyncHandler.js";
+import { createAuthMiddleware } from "../middleware/authMiddleware.js";
 import { LoginSchema, RegisterSchema } from "@sentinel/shared";
 
 const COOKIE_OPTIONS = {
