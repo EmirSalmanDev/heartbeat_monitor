@@ -1,6 +1,6 @@
 import { PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
-import { pingWithFallback } from "@sentinel/shared";
+import { pingWithFallback, type CurrentStatus } from "@sentinel/shared";
 import { MetricsService } from "./MetricsService.js";
 
 export class PingService {
@@ -27,10 +27,21 @@ export class PingService {
       },
     });
 
+    // Normalize to CurrentStatus DTO before caching.
+    // JSON.stringify(check) would serialize checkedAt as a Date object,
+    // making it a string on cache hits but a Date on cache misses — inconsistent.
+    // Using CurrentStatus ensures checkedAt is always an ISO string on both paths.
+    const currentStatus: CurrentStatus = {
+      result: check.result,
+      statusCode: check.statusCode,
+      latencyMs: check.latencyMs,
+      checkedAt: check.checkedAt.toISOString(),
+    };
+
     await this.redis.setex(
       `current_status:${monitorId}`,
       90,
-      JSON.stringify(check),
+      JSON.stringify(currentStatus),
     );
 
     this.metrics.recordPing(result.result, monitorId, result.latencyMs);
