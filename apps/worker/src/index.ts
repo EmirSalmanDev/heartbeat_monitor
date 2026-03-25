@@ -34,7 +34,7 @@ const gracefulShutdown = async (signal: NodeJS.Signals) => {
     );
   }
   await prisma.$disconnect();
-  redis.quit();
+  await redis.quit();
   process.exit(0);
 };
 

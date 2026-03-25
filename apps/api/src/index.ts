@@ -43,6 +43,6 @@ app.listen(PORT, () => {
 process.on("SIGTERM", async () => {
   console.log("[API] SIGTERM received — shutting down gracefully");
   await prisma.$disconnect();
-  redis.quit();
+  await redis.quit();
   process.exit(0);
 });
