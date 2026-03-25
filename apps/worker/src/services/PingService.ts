@@ -28,9 +28,10 @@ export class PingService {
     });
 
     // Normalize to CurrentStatus DTO before caching.
-    // JSON.stringify(check) would serialize checkedAt as a Date object,
-    // making it a string on cache hits but a Date on cache misses — inconsistent.
-    // Using CurrentStatus ensures checkedAt is always an ISO string on both paths.
+    // JSON.stringify(check) would serialize checkedAt to an ISO string in the
+    // cached JSON, while a fresh Prisma Check record has checkedAt as a Date.
+    // Using CurrentStatus ensures checkedAt is consistently an ISO string,
+    // regardless of whether the data comes from the database or the cache.
     const currentStatus: CurrentStatus = {
       result: check.result,
       statusCode: check.statusCode,
