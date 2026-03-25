@@ -1,6 +1,6 @@
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
-import { pingService } from "../index.js";
+import { pingService } from "../container.js";
 
 interface PingJobData {
   monitorId: string;

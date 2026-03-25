@@ -13,7 +13,10 @@ export class PingService {
   async execute(monitorId: string, url: string): Promise<void> {
     const result = await pingWithFallback(url);
 
-    await this.prisma.check.create({
+    // Persist result and use the returned Check record for caching.
+    // This ensures Redis always stores the same shape as the API fallback
+    // in MonitorService.getStatus() — both paths return a Check record.
+    const check = await this.prisma.check.create({
       data: {
         monitorId,
         result: result.result,
@@ -27,7 +30,7 @@ export class PingService {
     await this.redis.setex(
       `current_status:${monitorId}`,
       90,
-      JSON.stringify(result),
+      JSON.stringify(check),
     );
 
     this.metrics.recordPing(result.result, monitorId, result.latencyMs);
