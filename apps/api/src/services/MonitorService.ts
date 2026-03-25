@@ -49,7 +49,7 @@ export class MonitorService {
   /**
    * Redis cache-aside for current status.
    * PingService (Worker) writes this key after every ping with TTL 90s.
-   * Cache miss falls back to last Heartbeat in Postgres and re-warms the cache.
+   * Cache miss falls back to the latest Check record in Postgres and re-warms the cache.
    */
   async getStatus(
     monitorId: string,
