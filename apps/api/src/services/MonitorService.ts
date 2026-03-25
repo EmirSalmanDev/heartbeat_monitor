@@ -1,7 +1,7 @@
 import { PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
 import { NotFoundError, ForbiddenError } from "@sentinel/shared";
-import { QueueService } from "./QueueService";
+import { QueueService } from "./QueueService.js";
 
 export class MonitorService {
   constructor(

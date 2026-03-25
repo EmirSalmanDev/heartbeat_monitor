@@ -20,8 +20,11 @@ export class AuthService {
     });
 
     // Never return the password hash
-    const { passwordHash: _, ...safeUser } = user;
-    return safeUser;
+    return {
+      id: user.id,
+      email: user.email,
+      createdAt: user.createdAt.toISOString(),
+    };
   }
 
   async login(email: string, password: string): Promise<string> {

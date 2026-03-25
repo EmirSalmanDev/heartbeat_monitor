@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { AuthService } from "../services/AuthService";
-import { asyncHandler } from "../middleware/asyncHandler";
-import { createAuthMiddleware } from "../middleware/authMiddleware";
+import { AuthService } from "../services/AuthService.js";
+import { asyncHandler } from "../middleware/asyncHandler.js";
+import { createAuthMiddleware } from "../middleware/authMiddleware.js";
 import { LoginSchema, RegisterSchema } from "@sentinel/shared";
 
 const COOKIE_OPTIONS = {
@@ -19,11 +19,8 @@ export function createAuthRouter(authService: AuthService) {
     "/register",
     asyncHandler(async (req, res) => {
       const { email, password } = RegisterSchema.parse(req.body);
-      const { passwordHash: _, ...userDto } = await authService.register(
-        email,
-        password,
-      );
-      res.status(201).json({ message: "User created", user: userDto });
+      const user = await authService.register(email, password);
+      res.status(201).json({ message: "User created", user });
     }),
   );
 

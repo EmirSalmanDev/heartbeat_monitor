@@ -1,8 +1,8 @@
 import { Router } from "express";
-import { MonitorService } from "../services/MonitorService";
-import { asyncHandler } from "../middleware/asyncHandler";
-import { createAuthMiddleware } from "../middleware/authMiddleware";
-import { AuthService } from "../services/AuthService";
+import { MonitorService } from "../services/MonitorService.js";
+import { asyncHandler } from "../middleware/asyncHandler.js";
+import { createAuthMiddleware } from "../middleware/authMiddleware.js";
+import { AuthService } from "../services/AuthService.js";
 import { CreateMonitorSchema } from "@sentinel/shared";
 
 export function createMonitorRouter(
