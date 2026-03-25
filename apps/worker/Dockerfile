@@ -9,6 +9,7 @@ RUN npm install -g pnpm
 # Copy manifests (for caching)
 COPY pnpm-workspace.yaml ./
 COPY package.json pnpm-lock.yaml ./
+COPY tsconfig.base.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY packages/db/package.json ./packages/db/
 COPY apps/worker/package.json ./apps/worker/
