@@ -4,6 +4,8 @@ import {
   NotFoundError,
   ForbiddenError,
   type CurrentStatus,
+  type MonitorDto,
+  type UpdateMonitorInput,
 } from "@sentinel/shared";
 import { QueueService } from "./QueueService.js";
 
@@ -22,7 +24,6 @@ export class MonitorService {
       data: { ...data, userId },
     });
 
-    // Schedule repeating BullMQ job — Worker will consume it
     await this.queue.scheduleMonitor(
       monitor.id,
       monitor.url,
@@ -32,30 +33,91 @@ export class MonitorService {
     return monitor;
   }
 
-  async findAllByUser(userId: string) {
-    return this.prisma.monitor.findMany({
+  // Her monitor için Redis'ten currentStatus çeker ve MonitorDto'ya ekler
+  async findAllByUser(userId: string): Promise<MonitorDto[]> {
+    const monitors = await this.prisma.monitor.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
     });
+
+    // Her monitor için Redis'ten currentStatus çek
+    const enriched = await Promise.all(
+      monitors.map(async (m) => {
+        const cached = await this.redis.get(`current_status:${m.id}`);
+        const currentStatus: CurrentStatus | null = cached
+          ? (JSON.parse(cached) as CurrentStatus)
+          : null;
+
+        return {
+          ...m,
+          createdAt: m.createdAt.toISOString(),
+          updatedAt: m.updatedAt.toISOString(),
+          currentStatus,
+        } satisfies MonitorDto;
+      }),
+    );
+
+    return enriched;
   }
 
-  async findById(id: string, userId: string) {
+  async findById(id: string, userId: string): Promise<MonitorDto> {
     const monitor = await this.prisma.monitor.findUnique({ where: { id } });
     if (!monitor) throw new NotFoundError("Monitor");
     if (monitor.userId !== userId) throw new ForbiddenError();
-    return monitor;
+
+    const cached = await this.redis.get(`current_status:${id}`);
+    const currentStatus: CurrentStatus | null = cached
+      ? (JSON.parse(cached) as CurrentStatus)
+      : null;
+
+    return {
+      ...monitor,
+      createdAt: monitor.createdAt.toISOString(),
+      updatedAt: monitor.updatedAt.toISOString(),
+      currentStatus,
+    };
   }
 
-  /**
-   * Redis cache-aside for current status.
-   * PingService (Worker) writes this key after every ping with TTL 90s.
-   * Cache miss falls back to the latest Check record in Postgres and re-warms the cache.
-   */
+  async update(
+    id: string,
+    userId: string,
+    data: UpdateMonitorInput,
+  ): Promise<MonitorDto> {
+    // Ownership check
+    await this.findById(id, userId);
+
+    const updated = await this.prisma.monitor.update({
+      where: { id },
+      data,
+    });
+
+    // interval değiştiyse job'ı yeniden planla
+    if (data.intervalSecs !== undefined || data.status !== undefined) {
+      if (updated.status === "PAUSED") {
+        await this.queue.removeMonitor(id);
+      } else {
+        // ACTIVE — yeniden planla (interval değişmiş olabilir)
+        await this.queue.scheduleMonitor(id, updated.url, updated.intervalSecs);
+      }
+    }
+
+    const cached = await this.redis.get(`current_status:${id}`);
+    const currentStatus: CurrentStatus | null = cached
+      ? (JSON.parse(cached) as CurrentStatus)
+      : null;
+
+    return {
+      ...updated,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+      currentStatus,
+    };
+  }
+
   async getStatus(
     monitorId: string,
     userId: string,
   ): Promise<CurrentStatus | null> {
-    // Ownership check first
     await this.findById(monitorId, userId);
 
     const cached = await this.redis.get(`current_status:${monitorId}`);
@@ -68,8 +130,6 @@ export class MonitorService {
 
     if (!latest) return null;
 
-    // Normalize to CurrentStatus DTO — keeps checkedAt as ISO string
-    // consistent with the cache hit path
     const currentStatus: CurrentStatus = {
       result: latest.result,
       statusCode: latest.statusCode,
@@ -77,12 +137,12 @@ export class MonitorService {
       checkedAt: latest.checkedAt.toISOString(),
     };
 
-    // Re-warm cache
     await this.redis.setex(
       `current_status:${monitorId}`,
       90,
       JSON.stringify(currentStatus),
     );
+
     return currentStatus;
   }
 

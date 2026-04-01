@@ -3,7 +3,7 @@ import { MonitorService } from "../services/MonitorService.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { createAuthMiddleware } from "../middleware/authMiddleware.js";
 import { AuthService } from "../services/AuthService.js";
-import { CreateMonitorSchema, ok } from "@sentinel/shared";
+import { CreateMonitorSchema, UpdateMonitorSchema, ok } from "@sentinel/shared";
 
 export function createMonitorRouter(
   monitorService: MonitorService,
@@ -39,6 +39,19 @@ export function createMonitorRouter(
     }),
   );
 
+  router.patch(
+    "/:id",
+    asyncHandler(async (req, res) => {
+      const data = UpdateMonitorSchema.parse(req.body);
+      const monitor = await monitorService.update(
+        req.params.id,
+        req.userId,
+        data,
+      );
+      res.json(ok(monitor));
+    }),
+  );
+
   router.get(
     "/:id/status",
     asyncHandler(async (req, res) => {
@@ -51,7 +64,7 @@ export function createMonitorRouter(
     "/:id",
     asyncHandler(async (req, res) => {
       await monitorService.delete(req.params.id, req.userId);
-      res.status(204).send(); // 204 — body yok, ok() sarma
+      res.status(204).send();
     }),
   );
 
