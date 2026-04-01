@@ -93,15 +93,19 @@ services:
     networks:
       - sentinel_net
 
-  # ─── Nginx ──────────────────────────────────────────────────────────────────
+  # ─── Nginx ─────────────────────────────────────────
+  #   Stage 1 → pnpm build ile React SPA'yı derler
+  #   Stage 2 → dist/ dosyalarını nginx:alpine image'ına gömer
   nginx:
     container_name: sentinel_nginx
     build:
       context: .
-      dockerfile: nginx/Dockerfile
+      dockerfile: apps/web/Dockerfile
     restart: unless-stopped
     ports:
       - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - api
     networks:
