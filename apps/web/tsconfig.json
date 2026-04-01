@@ -1,7 +1,19 @@
 {
-  "files": [],
-  "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
-  ]
+  "extends": "../../tsconfig.base.json", // strict, skipLibCheck, esModuleInterop ...
+  "compilerOptions": {
+    "target": "ES2020", // base ES2022'yi override ediyor — Vite zaten transpile ediyor
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"], // base'de DOM yok
+    "module": "ESNext", // base NodeNext'i override ediyor — Vite bundle ediyor
+    "moduleResolution": "bundler", // base NodeNext'i override ediyor — .js uzantısı gerekmez
+    "allowImportingTsExtensions": true, // .ts/.tsx import edilebilir, noEmit ile birlikte çalışır
+    "isolatedModules": true, // her dosya bağımsız derlenir — Vite'ın çalışma şekliyle uyumlu
+    "moduleDetection": "force", // her dosyayı module olarak kabul eder, global scope sorununu önler
+    "noEmit": true, // tsc sadece type-check yapar, derlemeyi Vite üstlenir
+    "jsx": "react-jsx", // JSX'i React.createElement'e çevirmeden kullanır (React 17+)
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src"]
 }
