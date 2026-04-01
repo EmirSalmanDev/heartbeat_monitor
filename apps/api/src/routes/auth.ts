@@ -2,13 +2,13 @@ import { Router } from "express";
 import { AuthService } from "../services/AuthService.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { createAuthMiddleware } from "../middleware/authMiddleware.js";
-import { LoginSchema, RegisterSchema } from "@sentinel/shared";
+import { LoginSchema, RegisterSchema, ok } from "@sentinel/shared";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
   sameSite: "lax" as const,
-  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
+  maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
 export function createAuthRouter(authService: AuthService) {
@@ -20,7 +20,7 @@ export function createAuthRouter(authService: AuthService) {
     asyncHandler(async (req, res) => {
       const { email, password } = RegisterSchema.parse(req.body);
       const user = await authService.register(email, password);
-      res.status(201).json({ message: "User created", user });
+      res.status(201).json(ok({ message: "User created", user }));
     }),
   );
 
@@ -30,21 +30,20 @@ export function createAuthRouter(authService: AuthService) {
       const { email, password } = LoginSchema.parse(req.body);
       const token = await authService.login(email, password);
       res.cookie("token", token, COOKIE_OPTIONS);
-      res.json({ message: "Login successful" });
+      res.json(ok({ message: "Login successful" }));
     }),
   );
 
-  router.post("/logout", (req, res) => {
+  router.post("/logout", (_req, res) => {
     res.clearCookie("token");
-    res.json({ message: "Logged out" });
+    res.json(ok({ message: "Logged out" }));
   });
 
-  // Lightweight "am I logged in?" endpoint for the React app
   router.get(
     "/me",
     auth,
     asyncHandler(async (req, res) => {
-      res.json({ userId: req.userId });
+      res.json(ok({ userId: req.userId }));
     }),
   );
 
