@@ -7,6 +7,8 @@ import "./index.css";
 import { Login } from "./pages/Login.js";
 import { Register } from "./pages/Register.js";
 import { ProtectedRoute } from "./components/ProtectedRoute.js";
+import { Dashboard } from "./pages/Dashboard.js";
+import { MonitorDetail } from "./pages/MonitorDetail.js";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,7 +30,7 @@ createRoot(document.getElementById("root")!).render(
             path="/dashboard"
             element={
               <ProtectedRoute>
-                <Fill />
+                <Dashboard />
               </ProtectedRoute>
             }
           />
@@ -36,7 +38,7 @@ createRoot(document.getElementById("root")!).render(
             path="/monitors/:id"
             element={
               <ProtectedRoute>
-                <Fill />
+                <MonitorDetail />
               </ProtectedRoute>
             }
           />
