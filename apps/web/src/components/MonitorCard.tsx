@@ -68,7 +68,7 @@ export function MonitorCard({ monitor }: MonitorCardProps) {
       </div>
 
       {/* Actions — visible on hover */}
-      <div className="mt-4 flex items-center gap-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+      <div className="mt-4 flex items-center gap-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100">
         <button
           onClick={toggleStatus}
           disabled={updateMonitor.isPending}

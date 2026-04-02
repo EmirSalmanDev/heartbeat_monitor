@@ -28,10 +28,22 @@ export function CreateMonitorModal({ onClose }: CreateMonitorModalProps) {
       onClick={handleBackdropClick}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
     >
-      <div className="w-full max-w-md rounded-xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-monitor-modal-title"
+        className="w-full max-w-md rounded-xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl"
+      >
         <div className="mb-5 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-100">Add monitor</h2>
+          <h2
+            id="create-monitor-modal-title"
+            className="text-sm font-semibold text-zinc-100"
+          >
+            Add monitor
+          </h2>
           <button
+            type="button"
+            aria-label="Close modal"
             onClick={onClose}
             className="text-zinc-600 hover:text-zinc-400"
           >
