@@ -35,7 +35,7 @@ export function createAuthRouter(authService: AuthService) {
   );
 
   router.post("/logout", (_req, res) => {
-    res.clearCookie("token");
+    res.clearCookie("token", COOKIE_OPTIONS);
     res.json(ok({ message: "Logged out" }));
   });
 

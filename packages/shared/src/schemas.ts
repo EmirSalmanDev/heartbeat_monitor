@@ -30,9 +30,13 @@ export const CreateMonitorSchema = z.object({
     .default(60),
 });
 
-export const UpdateMonitorSchema = CreateMonitorSchema.partial().extend({
-  status: z.enum(["ACTIVE", "PAUSED"]).optional(),
-});
+export const UpdateMonitorSchema = CreateMonitorSchema.partial()
+  .extend({
+    status: z.enum(["ACTIVE", "PAUSED"]).optional(),
+  })
+  .refine((obj) => Object.keys(obj).length > 0, {
+    message: "At least one field must be provided",
+  });
 
 export const MonitorIdSchema = z.object({
   id: z.string().cuid("Invalid monitor ID"),
