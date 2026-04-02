@@ -30,8 +30,11 @@ export const CreateMonitorSchema = z.object({
     .default(60),
 });
 
-export const UpdateMonitorSchema = CreateMonitorSchema.partial()
-  .extend({
+export const UpdateMonitorSchema = z
+  .object({
+    name: z.string().min(1).max(100).optional(),
+    url: z.string().url().optional(),
+    intervalSecs: z.number().int().min(30).max(3600).optional(), // default yok
     status: z.enum(["ACTIVE", "PAUSED"]).optional(),
   })
   .refine((obj) => Object.keys(obj).length > 0, {

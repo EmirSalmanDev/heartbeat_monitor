@@ -52,8 +52,9 @@ export function CreateMonitorModal({ onClose }: CreateMonitorModalProps) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <Field label="Name">
+          <Field label="Name" htmlFor="monitor-name">
             <input
+              id="monitor-name"
               type="text"
               required
               value={name}
@@ -63,8 +64,9 @@ export function CreateMonitorModal({ onClose }: CreateMonitorModalProps) {
             />
           </Field>
 
-          <Field label="URL">
+          <Field label="URL" htmlFor="monitor-url">
             <input
+              id="monitor-url"
               type="url"
               required
               value={url}
@@ -74,8 +76,9 @@ export function CreateMonitorModal({ onClose }: CreateMonitorModalProps) {
             />
           </Field>
 
-          <Field label="Check interval">
+          <Field label="Check interval" htmlFor="monitor-interval">
             <select
+              id="monitor-interval"
               value={intervalSecs}
               onChange={(e) => setIntervalSecs(Number(e.target.value))}
               className="input-field"
@@ -115,10 +118,21 @@ export function CreateMonitorModal({ onClose }: CreateMonitorModalProps) {
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  children: ReactNode;
+}) {
   return (
     <div>
-      <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+      <label
+        htmlFor={htmlFor}
+        className="mb-1.5 block text-xs font-medium text-zinc-400"
+      >
         {label}
       </label>
       {children}

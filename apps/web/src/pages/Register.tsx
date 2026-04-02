@@ -1,14 +1,14 @@
 import { useState } from "react";
+import type { FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useRegister } from "../hooks/useAuth.js";
-import type { FormEvent } from "react";
 
 export function Register() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const register = useRegister();
 
-  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
     register.mutate({ email, password });
   }
@@ -31,23 +31,41 @@ export function Register() {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <input
-            type="email"
-            required
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="input-field"
-          />
-          <input
-            type="password"
-            required
-            minLength={8}
-            placeholder="Password (min 8 chars)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="input-field"
-          />
+          <div className="space-y-1">
+            <label
+              htmlFor="email"
+              className="block text-xs font-medium text-zinc-400"
+            >
+              Email
+            </label>
+            <input
+              id="email"
+              type="email"
+              required
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="input-field"
+            />
+          </div>
+          <div className="space-y-1">
+            <label
+              htmlFor="password"
+              className="block text-xs font-medium text-zinc-400"
+            >
+              Password
+            </label>
+            <input
+              id="password"
+              type="password"
+              required
+              minLength={8}
+              placeholder="Min 8 characters"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="input-field"
+            />
+          </div>
           {register.error && (
             <p className="text-xs text-red-400">{register.error.message}</p>
           )}

@@ -1,6 +1,6 @@
 import { useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { Link } from "react-router-dom";
-import React from "react";
 import { useLogin } from "../hooks/useAuth.js";
 
 export function Login() {
@@ -8,7 +8,7 @@ export function Login() {
   const [password, setPassword] = useState("");
   const login = useLogin();
 
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     login.mutate({ email, password });
   }
@@ -30,22 +30,40 @@ export function Login() {
       }
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        <input
-          type="email"
-          required
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="input-field"
-        />
-        <input
-          type="password"
-          required
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="input-field"
-        />
+        <div className="space-y-1">
+          <label
+            htmlFor="email"
+            className="block text-xs font-medium text-zinc-400"
+          >
+            Email
+          </label>
+          <input
+            id="email"
+            type="email"
+            required
+            placeholder="you@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="input-field"
+          />
+        </div>
+        <div className="space-y-1">
+          <label
+            htmlFor="password"
+            className="block text-xs font-medium text-zinc-400"
+          >
+            Password
+          </label>
+          <input
+            id="password"
+            type="password"
+            required
+            placeholder="••••••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="input-field"
+          />
+        </div>
         {login.error && (
           <p className="text-xs text-red-400">{login.error.message}</p>
         )}
@@ -61,32 +79,27 @@ export function Login() {
   );
 }
 
-// ------------------------------------------------------------------ //
-
 interface AuthLayoutProps {
   title: string;
   subtitle: string;
-  footer: React.ReactNode;
-  children: React.ReactNode;
+  footer: ReactNode;
+  children: ReactNode;
 }
 
 function AuthLayout({ title, subtitle, footer, children }: AuthLayoutProps) {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 p-4">
-      {/* Logo mark */}
       <div className="mb-8 flex items-center gap-2">
         <span className="h-2 w-2 rounded-full bg-emerald-400" />
         <span className="text-xs font-semibold tracking-widest text-zinc-400 uppercase">
           Sentinel
         </span>
       </div>
-
       <div className="w-full max-w-sm rounded-xl border border-zinc-800 bg-zinc-900 p-8">
         <h1 className="mb-1 text-lg font-semibold text-zinc-100">{title}</h1>
         <p className="mb-6 text-sm text-zinc-500">{subtitle}</p>
         {children}
       </div>
-
       <p className="mt-6 text-xs text-zinc-600">{footer}</p>
     </div>
   );
