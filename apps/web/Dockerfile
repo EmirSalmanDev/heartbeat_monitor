@@ -5,6 +5,7 @@ WORKDIR /app
 RUN corepack enable
 
 # Manifest
+COPY tsconfig.base.json ./
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/web/package.json        ./apps/web/
 COPY packages/shared/package.json ./packages/shared/

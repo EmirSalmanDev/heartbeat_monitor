@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useCreateMonitor } from "../hooks/useMonitors.js";
+import type { FormEvent, MouseEvent, ReactNode } from "react";
 
 interface CreateMonitorModalProps {
   onClose: () => void;
@@ -12,12 +13,12 @@ export function CreateMonitorModal({ onClose }: CreateMonitorModalProps) {
   const createMonitor = useCreateMonitor();
   const backdropRef = useRef<HTMLDivElement>(null);
 
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     createMonitor.mutate({ name, url, intervalSecs }, { onSuccess: onClose });
   }
 
-  function handleBackdropClick(e: React.MouseEvent<HTMLDivElement>) {
+  function handleBackdropClick(e: MouseEvent<HTMLDivElement>) {
     if (e.target === backdropRef.current) onClose();
   }
 
@@ -102,13 +103,7 @@ export function CreateMonitorModal({ onClose }: CreateMonitorModalProps) {
   );
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
       <label className="mb-1.5 block text-xs font-medium text-zinc-400">

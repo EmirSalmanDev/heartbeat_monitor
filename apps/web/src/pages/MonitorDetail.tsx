@@ -4,6 +4,7 @@ import {
   useMonitorStatus,
   useUpdateMonitor,
 } from "../hooks/useMonitors.js";
+import type { ReactNode } from "react";
 import { StatusBadge } from "../components/StatusBadge.js";
 
 export function MonitorDetail() {
@@ -132,7 +133,7 @@ export function MonitorDetail() {
 
 // ------------------------------------------------------------------ //
 
-function PageShell({ children }: { children: React.ReactNode }) {
+function PageShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-zinc-950">
       <header className="border-b border-zinc-800/60 px-6 py-4">
