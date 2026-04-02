@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: theme(colors.zinc.950);
+    color: theme(colors.zinc.100);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .input-field {
+    @apply w-full rounded-lg border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none transition-colors focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/30;
+  }
+
+  .btn-primary {
+    @apply rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-400 active:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+}

@@ -1,14 +1,11 @@
 import { Queue } from "bullmq";
 import Redis from "ioredis";
 
-//  QueueService — BullMQ producer.
-//  Note: BullMQ requires its own ioredis connection (separate from the cache client)
-//  because it sets maxRetriesPerRequest: null and manages blocking commands internally.
 export class QueueService {
   private queue: Queue;
 
   constructor(redisUrl: string) {
-    // Create a dedicated Redis connection for BullMQ — do NOT share with cache redis
+    // BullMQ için ayrı Redis bağlantısı — cache client ile paylaşılmaz
     const connection = new Redis(redisUrl, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
@@ -17,8 +14,8 @@ export class QueueService {
     this.queue = new Queue("monitor-queue", {
       connection,
       defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: "exponential", delay: 5000 },
+        attempts: 2,
+        backoff: { type: "fixed", delay: 1000 },
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 50 },
       },
@@ -30,20 +27,19 @@ export class QueueService {
       "ping",
       { monitorId, url },
       {
-        repeat: { every: intervalSecs * 1000 },
-        jobId: `monitor-${monitorId}`, // Stable jobId prevents duplicate schedules on restart
+        repeat: {
+          every: intervalSecs * 1000,
+          jobId: monitorId, // removeRepeatable için şart
+        },
       },
     );
   }
 
-  async removeMonitor(monitorId: string) {
-    // Remove the repeating job definition — in-flight jobs are not affected
-    const repeatableJobs = await this.queue.getRepeatableJobs();
-    const job = repeatableJobs.find((j) =>
-      j.key.includes(`monitor-${monitorId}`),
-    );
-    if (job) {
-      await this.queue.removeRepeatableByKey(job.key);
-    }
+  // O(1)
+  async removeMonitor(monitorId: string, intervalSecs: number) {
+    await this.queue.removeRepeatable("ping", {
+      every: intervalSecs * 1000,
+      jobId: monitorId,
+    });
   }
 }

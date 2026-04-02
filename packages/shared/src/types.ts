@@ -57,3 +57,8 @@ export interface ApiError {
 }
 
 export type ApiResponse<T> = ApiSuccess<T> | ApiError;
+
+// Response envelope helper
+export function ok<T>(data: T): ApiSuccess<T> {
+  return { success: true, data };
+}

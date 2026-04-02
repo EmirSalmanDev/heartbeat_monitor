@@ -4,6 +4,8 @@ import {
   NotFoundError,
   ForbiddenError,
   type CurrentStatus,
+  type MonitorDto,
+  type UpdateMonitorInput,
 } from "@sentinel/shared";
 import { QueueService } from "./QueueService.js";
 
@@ -14,52 +16,132 @@ export class MonitorService {
     private queue: QueueService,
   ) {}
 
+  // --- HELPERS ---
+
+  private parseStatus(cached: string | null | undefined): CurrentStatus | null {
+    if (!cached) return null;
+    try {
+      return JSON.parse(cached) as CurrentStatus;
+    } catch {
+      return null;
+    }
+  }
+
+  private async verifyOwnership(id: string, userId: string): Promise<void> {
+    const monitor = await this.prisma.monitor.findUnique({
+      where: { id },
+      select: { userId: true },
+    });
+
+    if (!monitor) throw new NotFoundError("Monitor");
+    if (monitor.userId !== userId) throw new ForbiddenError();
+  }
+
+  // --- PUBLIC METHODS ---
+
   async create(
     data: { name: string; url: string; intervalSecs: number },
     userId: string,
-  ) {
+  ): Promise<MonitorDto> {
     const monitor = await this.prisma.monitor.create({
       data: { ...data, userId },
     });
 
-    // Schedule repeating BullMQ job — Worker will consume it
     await this.queue.scheduleMonitor(
       monitor.id,
       monitor.url,
       monitor.intervalSecs,
     );
 
-    return monitor;
+    return {
+      ...monitor,
+      createdAt: monitor.createdAt.toISOString(),
+      updatedAt: monitor.updatedAt.toISOString(),
+      currentStatus: null,
+    } satisfies MonitorDto;
   }
 
-  async findAllByUser(userId: string) {
-    return this.prisma.monitor.findMany({
+  async findAllByUser(userId: string): Promise<MonitorDto[]> {
+    const monitors = await this.prisma.monitor.findMany({
       where: { userId },
       orderBy: { createdAt: "desc" },
     });
+
+    // Early exit
+    if (monitors.length === 0) return [];
+
+    const keys = monitors.map((m) => `current_status:${m.id}`);
+    const cachedStatuses = await this.redis.mget(keys);
+
+    return monitors.map((m, index) => {
+      return {
+        ...m,
+        createdAt: m.createdAt.toISOString(),
+        updatedAt: m.updatedAt.toISOString(),
+        currentStatus: this.parseStatus(cachedStatuses[index]),
+      } satisfies MonitorDto;
+    });
   }
 
-  async findById(id: string, userId: string) {
+  async findById(id: string, userId: string): Promise<MonitorDto> {
     const monitor = await this.prisma.monitor.findUnique({ where: { id } });
     if (!monitor) throw new NotFoundError("Monitor");
     if (monitor.userId !== userId) throw new ForbiddenError();
-    return monitor;
+
+    const cached = await this.redis.get(`current_status:${id}`);
+
+    return {
+      ...monitor,
+      createdAt: monitor.createdAt.toISOString(),
+      updatedAt: monitor.updatedAt.toISOString(),
+      currentStatus: this.parseStatus(cached), // Helper
+    };
   }
 
-  /**
-   * Redis cache-aside for current status.
-   * PingService (Worker) writes this key after every ping with TTL 90s.
-   * Cache miss falls back to the latest Check record in Postgres and re-warms the cache.
-   */
+  async update(
+    id: string,
+    userId: string,
+    data: UpdateMonitorInput,
+  ): Promise<MonitorDto> {
+    // Ownership check yerine tam monitor çek — eski intervalSecs lazım
+    const existing = await this.prisma.monitor.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundError("Monitor");
+    if (existing.userId !== userId) throw new ForbiddenError();
+
+    const updated = await this.prisma.monitor.update({ where: { id }, data });
+
+    const shouldReschedule =
+      data.intervalSecs !== undefined ||
+      data.status !== undefined ||
+      data.url !== undefined;
+
+    if (shouldReschedule) {
+      // Eski intervalSecs ile kaldır — yeni değerle değil
+      await this.queue.removeMonitor(id, existing.intervalSecs);
+      if (updated.status !== "PAUSED") {
+        await this.queue.scheduleMonitor(id, updated.url, updated.intervalSecs);
+      }
+    }
+
+    const cached = await this.redis.get(`current_status:${id}`);
+
+    return {
+      ...updated,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+      currentStatus: this.parseStatus(cached),
+    };
+  }
+
   async getStatus(
     monitorId: string,
     userId: string,
   ): Promise<CurrentStatus | null> {
-    // Ownership check first
-    await this.findById(monitorId, userId);
+    await this.verifyOwnership(monitorId, userId);
 
     const cached = await this.redis.get(`current_status:${monitorId}`);
-    if (cached) return JSON.parse(cached) as CurrentStatus;
+    const parsedStatus = this.parseStatus(cached);
+    if (parsedStatus) return parsedStatus;
 
     const latest = await this.prisma.check.findFirst({
       where: { monitorId },
@@ -68,8 +150,6 @@ export class MonitorService {
 
     if (!latest) return null;
 
-    // Normalize to CurrentStatus DTO — keeps checkedAt as ISO string
-    // consistent with the cache hit path
     const currentStatus: CurrentStatus = {
       result: latest.result,
       statusCode: latest.statusCode,
@@ -77,19 +157,21 @@ export class MonitorService {
       checkedAt: latest.checkedAt.toISOString(),
     };
 
-    // Re-warm cache
     await this.redis.setex(
       `current_status:${monitorId}`,
       90,
       JSON.stringify(currentStatus),
     );
+
     return currentStatus;
   }
 
   async delete(id: string, userId: string): Promise<void> {
-    await this.findById(id, userId);
+    const existing = await this.prisma.monitor.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundError("Monitor");
+    if (existing.userId !== userId) throw new ForbiddenError();
 
-    await this.queue.removeMonitor(id);
+    await this.queue.removeMonitor(id, existing.intervalSecs);
     await this.prisma.monitor.delete({ where: { id } });
     await this.redis.del(`current_status:${id}`);
   }

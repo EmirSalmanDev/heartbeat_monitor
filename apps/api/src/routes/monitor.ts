@@ -3,7 +3,7 @@ import { MonitorService } from "../services/MonitorService.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { createAuthMiddleware } from "../middleware/authMiddleware.js";
 import { AuthService } from "../services/AuthService.js";
-import { CreateMonitorSchema } from "@sentinel/shared";
+import { CreateMonitorSchema, UpdateMonitorSchema, ok } from "@sentinel/shared";
 
 export function createMonitorRouter(
   monitorService: MonitorService,
@@ -12,14 +12,13 @@ export function createMonitorRouter(
   const router = Router();
   const auth = createAuthMiddleware(authService);
 
-  // All monitor routes require authentication
   router.use(auth);
 
   router.get(
     "/",
     asyncHandler(async (req, res) => {
       const monitors = await monitorService.findAllByUser(req.userId);
-      res.json(monitors);
+      res.json(ok(monitors));
     }),
   );
 
@@ -28,7 +27,7 @@ export function createMonitorRouter(
     asyncHandler(async (req, res) => {
       const data = CreateMonitorSchema.parse(req.body);
       const monitor = await monitorService.create(data, req.userId);
-      res.status(201).json(monitor);
+      res.status(201).json(ok(monitor));
     }),
   );
 
@@ -36,7 +35,20 @@ export function createMonitorRouter(
     "/:id",
     asyncHandler(async (req, res) => {
       const monitor = await monitorService.findById(req.params.id, req.userId);
-      res.json(monitor);
+      res.json(ok(monitor));
+    }),
+  );
+
+  router.patch(
+    "/:id",
+    asyncHandler(async (req, res) => {
+      const data = UpdateMonitorSchema.parse(req.body);
+      const monitor = await monitorService.update(
+        req.params.id,
+        req.userId,
+        data,
+      );
+      res.json(ok(monitor));
     }),
   );
 
@@ -44,7 +56,7 @@ export function createMonitorRouter(
     "/:id/status",
     asyncHandler(async (req, res) => {
       const status = await monitorService.getStatus(req.params.id, req.userId);
-      res.json(status);
+      res.json(ok(status));
     }),
   );
 
