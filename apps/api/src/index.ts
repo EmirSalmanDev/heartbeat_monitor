@@ -37,6 +37,7 @@ app.listen(PORT, () => {
   console.log(
     `[API] Listening on port ${PORT} — ${process.env.NODE_ENV ?? "development"}`,
   );
+  void queueService.scheduleRetention();
 });
 
 // shutdown

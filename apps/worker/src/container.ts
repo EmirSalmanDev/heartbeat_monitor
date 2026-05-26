@@ -6,7 +6,10 @@ import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
 import { MetricsService } from "./services/MetricsService.js";
 import { PingService } from "./services/PingService.js";
+import { RetentionService } from "./services/RetentionService.js";
 
 export const metricsService = new MetricsService();
 
 export const pingService = new PingService(prisma, redis, metricsService);
+
+export const retentionService = new RetentionService(prisma);

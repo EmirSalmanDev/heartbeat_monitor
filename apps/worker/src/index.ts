@@ -11,7 +11,14 @@ const { worker } = await import("./processors/pingProcessor.js").catch(
   },
 );
 
-console.log("Worker started — listening for ping jobs...");
+const { retentionWorker } = await import(
+  "./processors/retentionProcessor.js"
+).catch((err) => {
+  console.error("Failed to start retention processor:", err);
+  process.exit(1);
+});
+
+console.log("Worker started — listening for ping and retention jobs...");
 
 // Minimal HTTP server — serves Prometheus metrics and a health check.
 // Runs on a separate internal port so Nginx can proxy /metrics here
@@ -55,10 +62,17 @@ const gracefulShutdown = async (signal: NodeJS.Signals) => {
 
   try {
     await worker.close();
-    console.log("[Worker] BullMQ worker closed");
+    console.log("[Worker] Ping worker closed");
+  } catch (err) {
+    console.error("[Worker] Error closing ping worker:", (err as Error).message);
+  }
+
+  try {
+    await retentionWorker.close();
+    console.log("[Worker] Retention worker closed");
   } catch (err) {
     console.error(
-      "[Worker] Error closing BullMQ worker:",
+      "[Worker] Error closing retention worker:",
       (err as Error).message,
     );
   }
