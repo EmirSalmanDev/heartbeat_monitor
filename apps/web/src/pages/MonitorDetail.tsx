@@ -3,6 +3,7 @@ import {
   useMonitor,
   useMonitorStatus,
   useUpdateMonitor,
+  useMonitorChecks,
 } from "../hooks/useMonitors.js";
 import type { ReactNode } from "react";
 import { StatusBadge } from "../components/StatusBadge.js";
@@ -11,6 +12,7 @@ export function MonitorDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: monitor, isLoading, isError } = useMonitor(id!);
   const { data: status } = useMonitorStatus(id!);
+  const { data: checksData, isLoading: checksLoading } = useMonitorChecks(id!);
   const updateMonitor = useUpdateMonitor(id!);
 
   if (isLoading) {
@@ -127,6 +129,52 @@ export function MonitorDetail() {
           </div>
         </div>
       )}
+
+      {/* Check History */}
+      <div className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/60">
+        <p className="px-5 pt-5 pb-3 text-xs font-semibold tracking-widest text-zinc-600 uppercase">
+          Check History
+        </p>
+        {checksLoading ? (
+          <div className="mx-5 mb-5 h-24 animate-pulse rounded-lg bg-zinc-800" />
+        ) : !checksData?.checks.length ? (
+          <p className="px-5 pb-5 text-sm text-zinc-600">No checks yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-t border-zinc-800 text-left text-xs font-medium tracking-widest text-zinc-600 uppercase">
+                  <th className="px-5 py-2.5">Time</th>
+                  <th className="px-5 py-2.5">Result</th>
+                  <th className="px-5 py-2.5">Status code</th>
+                  <th className="px-5 py-2.5">Latency</th>
+                </tr>
+              </thead>
+              <tbody>
+                {checksData.checks.map((c) => (
+                  <tr
+                    key={c.id}
+                    className="border-t border-zinc-800/60 hover:bg-zinc-800/30"
+                  >
+                    <td className="px-5 py-2.5 text-zinc-400">
+                      {new Date(c.checkedAt).toLocaleString()}
+                    </td>
+                    <td className="px-5 py-2.5">
+                      <StatusBadge status={c.result} />
+                    </td>
+                    <td className="px-5 py-2.5 text-zinc-300">
+                      {c.statusCode ?? "—"}
+                    </td>
+                    <td className="px-5 py-2.5 text-zinc-300">
+                      {c.latencyMs != null ? `${c.latencyMs}ms` : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </PageShell>
   );
 }

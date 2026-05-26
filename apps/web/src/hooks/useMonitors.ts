@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { MonitorDto, CurrentStatus } from "@sentinel/shared";
+import type { MonitorDto, CurrentStatus, CheckDto } from "@sentinel/shared";
 import { api, ApiRequestError } from "../lib/api.js";
 
 export function useMonitors() {
@@ -24,6 +24,19 @@ export function useMonitorStatus(id: string) {
   return useQuery<CurrentStatus | null, ApiRequestError>({
     queryKey: ["monitors", id, "status"],
     queryFn: () => api.get<CurrentStatus | null>(`/api/monitors/${id}/status`),
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+}
+
+export function useMonitorChecks(id: string) {
+  return useQuery<
+    { checks: CheckDto[]; total: number; page: number; limit: number },
+    ApiRequestError
+  >({
+    queryKey: ["monitors", id, "checks"],
+    queryFn: () =>
+      api.get(`/api/monitors/${id}/checks?page=1&limit=20`),
     refetchInterval: 30_000,
     staleTime: 15_000,
   });
