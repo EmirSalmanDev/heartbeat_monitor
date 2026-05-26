@@ -41,12 +41,7 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    command:
-      [
-        "node",
-        "-e",
-        "require('child_process').execSync('npx prisma migrate deploy', { stdio: 'inherit', cwd: '/app/packages/db' })",
-      ]
+    command: ["sh", "-c", "cd /app/packages/db && npx prisma migrate deploy"]
     env_file: .env
     depends_on:
       postgres:

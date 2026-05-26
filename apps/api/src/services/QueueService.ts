@@ -27,19 +27,14 @@ export class QueueService {
       "ping",
       { monitorId, url },
       {
-        repeat: {
-          every: intervalSecs * 1000,
-          jobId: monitorId, // removeRepeatable için şart
-        },
+        jobId: `monitor-${monitorId}`,
+        repeat: { every: intervalSecs * 1000 },
       },
     );
   }
 
-  // O(1)
   async removeMonitor(monitorId: string, intervalSecs: number) {
-    await this.queue.removeRepeatable("ping", {
-      every: intervalSecs * 1000,
-      jobId: monitorId,
-    });
+    await this.queue.removeRepeatable("ping", { every: intervalSecs * 1000 });
+    await this.queue.remove(`monitor-${monitorId}`);
   }
 }
