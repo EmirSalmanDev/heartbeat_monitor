@@ -3,7 +3,12 @@ import { MonitorService } from "../services/MonitorService.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { createAuthMiddleware } from "../middleware/authMiddleware.js";
 import { AuthService } from "../services/AuthService.js";
-import { CreateMonitorSchema, UpdateMonitorSchema, ok } from "@sentinel/shared";
+import {
+  CreateMonitorSchema,
+  UpdateMonitorSchema,
+  PaginationSchema,
+  ok,
+} from "@sentinel/shared";
 
 export function createMonitorRouter(
   monitorService: MonitorService,
@@ -28,6 +33,20 @@ export function createMonitorRouter(
       const data = CreateMonitorSchema.parse(req.body);
       const monitor = await monitorService.create(data, req.userId);
       res.status(201).json(ok(monitor));
+    }),
+  );
+
+  router.get(
+    "/:id/checks",
+    asyncHandler(async (req, res) => {
+      const { page, limit } = PaginationSchema.parse(req.query);
+      const { checks, total } = await monitorService.getChecks(
+        req.params.id,
+        req.userId,
+        page,
+        limit,
+      );
+      res.json(ok({ checks, total, page, limit }));
     }),
   );
 

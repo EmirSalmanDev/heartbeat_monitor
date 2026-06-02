@@ -3,6 +3,7 @@ import Redis from "ioredis";
 
 export class QueueService {
   private queue: Queue;
+  private retentionQueue: Queue;
 
   constructor(redisUrl: string) {
     // BullMQ için ayrı Redis bağlantısı — cache client ile paylaşılmaz
@@ -20,6 +21,8 @@ export class QueueService {
         removeOnFail: { count: 50 },
       },
     });
+
+    this.retentionQueue = new Queue("retention-queue", { connection });
   }
 
   async scheduleMonitor(monitorId: string, url: string, intervalSecs: number) {
@@ -27,19 +30,26 @@ export class QueueService {
       "ping",
       { monitorId, url },
       {
-        repeat: {
-          every: intervalSecs * 1000,
-          jobId: monitorId, // removeRepeatable için şart
-        },
+        repeat: { every: intervalSecs * 1000, jobId: `monitor-${monitorId}` },
       },
     );
   }
 
-  // O(1)
   async removeMonitor(monitorId: string, intervalSecs: number) {
     await this.queue.removeRepeatable("ping", {
       every: intervalSecs * 1000,
-      jobId: monitorId,
+      jobId: `monitor-${monitorId}`,
     });
+  }
+
+  async scheduleRetention() {
+    await this.retentionQueue.add(
+      "retention",
+      {},
+      {
+        jobId: "retention-job",
+        repeat: { every: 86400 * 1000 },
+      },
+    );
   }
 }

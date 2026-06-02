@@ -5,18 +5,22 @@ export class MetricsService {
   private latencyHistogram: Histogram;
 
   constructor() {
-    this.pingCounter = new Counter({
-      name: "sentinel_ping_total",
-      help: "Total ping attempts",
-      labelNames: ["status"],
-    });
+    this.pingCounter =
+      (register.getSingleMetric("sentinel_ping_total") as Counter<string>) ??
+      new Counter({
+        name: "sentinel_ping_total",
+        help: "Total ping attempts",
+        labelNames: ["status"],
+      });
 
-    this.latencyHistogram = new Histogram({
-      name: "sentinel_ping_latency_seconds",
-      help: "Ping latency distribution",
-      labelNames: ["monitorId"],
-      buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
-    });
+    this.latencyHistogram =
+      (register.getSingleMetric("sentinel_ping_latency_seconds") as Histogram<string>) ??
+      new Histogram({
+        name: "sentinel_ping_latency_seconds",
+        help: "Ping latency distribution",
+        labelNames: ["monitorId"],
+        buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+      });
   }
 
   recordPing(

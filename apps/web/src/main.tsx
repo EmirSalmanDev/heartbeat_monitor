@@ -7,6 +7,7 @@ import "./index.css";
 import { Login } from "./pages/Login.js";
 import { Register } from "./pages/Register.js";
 import { ProtectedRoute } from "./components/ProtectedRoute.js";
+import { AuthRoute } from "./components/AuthRoute.js";
 import { Dashboard } from "./pages/Dashboard.js";
 import { MonitorDetail } from "./pages/MonitorDetail.js";
 
@@ -24,8 +25,22 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
+          <Route
+            path="/login"
+            element={
+              <AuthRoute>
+                <Login />
+              </AuthRoute>
+            }
+          />
+          <Route
+            path="/register"
+            element={
+              <AuthRoute>
+                <Register />
+              </AuthRoute>
+            }
+          />
           <Route
             path="/dashboard"
             element={

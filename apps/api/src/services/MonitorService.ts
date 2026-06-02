@@ -5,9 +5,16 @@ import {
   ForbiddenError,
   type CurrentStatus,
   type MonitorDto,
+  type CheckDto,
   type UpdateMonitorInput,
 } from "@sentinel/shared";
 import { QueueService } from "./QueueService.js";
+
+type CheckStat = {
+  result: string;
+  _count: { result: number };
+  _avg: { latencyMs: number | null };
+};
 
 export class MonitorService {
   constructor(
@@ -25,6 +32,43 @@ export class MonitorService {
     } catch {
       return null;
     }
+  }
+
+  private computeStats(rows: CheckStat[]): {
+    uptime24h: number | null;
+    avgLatency24h: number | null;
+  } {
+    if (rows.length === 0) return { uptime24h: null, avgLatency24h: null };
+
+    const upRow = rows.find((r) => r.result === "UP");
+    const downRow = rows.find((r) => r.result === "DOWN");
+    const upCount = upRow?._count.result ?? 0;
+    const downCount = downRow?._count.result ?? 0;
+    const total = upCount + downCount;
+
+    if (total === 0) return { uptime24h: null, avgLatency24h: null };
+
+    const uptime24h = Math.round((upCount / total) * 1000) / 10;
+    const avgLatency24h =
+      upRow?._avg.latencyMs != null
+        ? Math.round(upRow._avg.latencyMs * 10) / 10
+        : null;
+
+    return { uptime24h, avgLatency24h };
+  }
+
+  private async calculateStats(monitorId: string): Promise<{
+    uptime24h: number | null;
+    avgLatency24h: number | null;
+  }> {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const rows = await this.prisma.check.groupBy({
+      by: ["result"],
+      where: { monitorId, checkedAt: { gte: since } },
+      _count: { result: true },
+      _avg: { latencyMs: true },
+    });
+    return this.computeStats(rows);
   }
 
   private async verifyOwnership(id: string, userId: string): Promise<void> {
@@ -67,18 +111,41 @@ export class MonitorService {
       orderBy: { createdAt: "desc" },
     });
 
-    // Early exit
     if (monitors.length === 0) return [];
 
-    const keys = monitors.map((m) => `current_status:${m.id}`);
-    const cachedStatuses = await this.redis.mget(keys);
+    const monitorIds = monitors.map((m) => m.id);
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    // Single round-trip to Redis + single aggregate DB query in parallel
+    const [cachedStatuses, statsRows] = await Promise.all([
+      this.redis.mget(monitorIds.map((id) => `current_status:${id}`)),
+      this.prisma.check.groupBy({
+        by: ["monitorId", "result"],
+        where: { monitorId: { in: monitorIds }, checkedAt: { gte: since } },
+        _count: { result: true },
+        _avg: { latencyMs: true },
+      }),
+    ]);
+
+    // Index rows by monitorId for O(1) lookup during map
+    const statsByMonitor = new Map<string, CheckStat[]>();
+    for (const row of statsRows) {
+      const arr = statsByMonitor.get(row.monitorId) ?? [];
+      arr.push(row);
+      statsByMonitor.set(row.monitorId, arr);
+    }
 
     return monitors.map((m, index) => {
+      const { uptime24h, avgLatency24h } = this.computeStats(
+        statsByMonitor.get(m.id) ?? [],
+      );
       return {
         ...m,
         createdAt: m.createdAt.toISOString(),
         updatedAt: m.updatedAt.toISOString(),
         currentStatus: this.parseStatus(cachedStatuses[index]),
+        uptime24h,
+        avgLatency24h,
       } satisfies MonitorDto;
     });
   }
@@ -88,14 +155,19 @@ export class MonitorService {
     if (!monitor) throw new NotFoundError("Monitor");
     if (monitor.userId !== userId) throw new ForbiddenError();
 
-    const cached = await this.redis.get(`current_status:${id}`);
+    const [cached, { uptime24h, avgLatency24h }] = await Promise.all([
+      this.redis.get(`current_status:${id}`),
+      this.calculateStats(id),
+    ]);
 
     return {
       ...monitor,
       createdAt: monitor.createdAt.toISOString(),
       updatedAt: monitor.updatedAt.toISOString(),
-      currentStatus: this.parseStatus(cached), // Helper
-    };
+      currentStatus: this.parseStatus(cached),
+      uptime24h,
+      avgLatency24h,
+    } satisfies MonitorDto;
   }
 
   async update(
@@ -164,6 +236,39 @@ export class MonitorService {
     );
 
     return currentStatus;
+  }
+
+  async getChecks(
+    monitorId: string,
+    userId: string,
+    page: number,
+    limit: number,
+  ): Promise<{ checks: CheckDto[]; total: number }> {
+    await this.verifyOwnership(monitorId, userId);
+
+    const skip = (page - 1) * limit;
+
+    const [rows, total] = await Promise.all([
+      this.prisma.check.findMany({
+        where: { monitorId },
+        orderBy: { checkedAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      this.prisma.check.count({ where: { monitorId } }),
+    ]);
+
+    const checks: CheckDto[] = rows.map((c) => ({
+      id: c.id,
+      monitorId: c.monitorId,
+      result: c.result,
+      statusCode: c.statusCode,
+      latencyMs: c.latencyMs,
+      errorMsg: c.errorMsg,
+      checkedAt: c.checkedAt.toISOString(),
+    }));
+
+    return { checks, total };
   }
 
   async delete(id: string, userId: string): Promise<void> {
