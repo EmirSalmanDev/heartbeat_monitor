@@ -30,8 +30,7 @@ export class QueueService {
       "ping",
       { monitorId, url },
       {
-        jobId: `monitor-${monitorId}`,
-        repeat: { every: intervalSecs * 1000 },
+        repeat: { every: intervalSecs * 1000, jobId: `monitor-${monitorId}` },
       },
     );
   }
