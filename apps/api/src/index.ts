@@ -37,7 +37,9 @@ app.listen(PORT, () => {
   console.log(
     `[API] Listening on port ${PORT} — ${process.env.NODE_ENV ?? "development"}`,
   );
-  void queueService.scheduleRetention();
+  queueService.scheduleRetention().catch((err) => {
+    console.error("[API] Failed to schedule retention job:", err);
+  });
 });
 
 // shutdown
