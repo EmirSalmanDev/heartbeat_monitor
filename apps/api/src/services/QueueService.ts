@@ -36,8 +36,10 @@ export class QueueService {
   }
 
   async removeMonitor(monitorId: string, intervalSecs: number) {
-    await this.queue.removeRepeatable("ping", { every: intervalSecs * 1000 });
-    await this.queue.remove(`monitor-${monitorId}`);
+    await this.queue.removeRepeatable("ping", {
+      every: intervalSecs * 1000,
+      jobId: `monitor-${monitorId}`,
+    });
   }
 
   async scheduleRetention() {
