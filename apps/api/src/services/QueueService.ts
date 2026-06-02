@@ -1,5 +1,5 @@
 import { Queue } from "bullmq";
-import Redis from "ioredis";
+import { Redis } from "ioredis";
 
 export class QueueService {
   private queue: Queue;
@@ -30,16 +30,18 @@ export class QueueService {
       "ping",
       { monitorId, url },
       {
-        repeat: { every: intervalSecs * 1000, jobId: `monitor-${monitorId}` },
+        jobId: `monitor-${monitorId}`,
+        repeat: { every: intervalSecs * 1000 },
       },
     );
   }
 
   async removeMonitor(monitorId: string, intervalSecs: number) {
-    await this.queue.removeRepeatable("ping", {
-      every: intervalSecs * 1000,
-      jobId: `monitor-${monitorId}`,
-    });
+    await this.queue.removeRepeatable(
+      "ping",
+      { every: intervalSecs * 1000 },
+      `monitor-${monitorId}`,
+    );
   }
 
   async scheduleRetention() {

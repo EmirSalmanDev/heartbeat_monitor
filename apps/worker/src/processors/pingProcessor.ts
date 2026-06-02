@@ -1,5 +1,5 @@
 import { Worker, Job } from "bullmq";
-import IORedis from "ioredis";
+import { Redis as IORedis } from "ioredis";
 import { pingService } from "../container.js";
 
 interface PingJobData {

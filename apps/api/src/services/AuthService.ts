@@ -34,13 +34,13 @@ export class AuthService {
     const dummyHash =
       "$2b$12$LqCimMbCJpR8KqJtH5VJFeTLpBBNkTJMjEOBL3qkRRdXlWC1a0Hry";
     const valid = user
-      ? await bcrypt.compare(password, user.passwordHash)
-      : await bcrypt.compare(password, dummyHash).then(() => false);
+      ? await bcrypt.compare(password, user.passwordHash).catch(() => false)
+      : await bcrypt.compare(password, dummyHash).catch(() => false).then(() => false);
 
     if (!user || !valid) throw new UnauthorizedError();
 
     return jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, {
-      expiresIn: "7d",
+      expiresIn: (process.env.JWT_EXPIRES_IN ?? "7d") as jwt.SignOptions["expiresIn"],
     });
   }
 

@@ -1,4 +1,5 @@
 import { useParams, Link } from "react-router-dom";
+import { useState } from "react";
 import {
   useMonitor,
   useMonitorStatus,
@@ -10,9 +11,10 @@ import { StatusBadge } from "../components/StatusBadge.js";
 
 export function MonitorDetail() {
   const { id } = useParams<{ id: string }>();
+  const [checksPage, setChecksPage] = useState(1);
   const { data: monitor, isLoading, isError } = useMonitor(id!);
   const { data: status } = useMonitorStatus(id!);
-  const { data: checksData, isLoading: checksLoading } = useMonitorChecks(id!);
+  const { data: checksData, isLoading: checksLoading } = useMonitorChecks(id!, checksPage);
   const updateMonitor = useUpdateMonitor(id!);
 
   if (isLoading) {
@@ -172,6 +174,29 @@ export function MonitorDetail() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {checksData && checksData.total > 20 && (
+          <div className="flex items-center justify-between border-t border-zinc-800 px-5 py-3">
+            <span className="text-xs text-zinc-600">
+              Page {checksPage} of {Math.ceil(checksData.total / 20)}
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setChecksPage((p) => p - 1)}
+                disabled={checksPage === 1}
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-600 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Previous
+              </button>
+              <button
+                onClick={() => setChecksPage((p) => p + 1)}
+                disabled={checksPage * 20 >= checksData.total}
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:border-zinc-600 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
           </div>
         )}
       </div>

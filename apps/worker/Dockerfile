@@ -58,4 +58,5 @@ COPY --from=builder /app/packages/db/generated ./packages/db/generated
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 # Start worker
+EXPOSE 9091
 CMD ["node", "apps/worker/dist/index.js"]

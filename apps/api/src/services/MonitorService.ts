@@ -117,7 +117,7 @@ export class MonitorService {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     // Single round-trip to Redis + single aggregate DB query in parallel
-    const [cachedStatuses, statsRows] = await Promise.all([
+    const [cachedValues, statsRows] = await Promise.all([
       this.redis.mget(monitorIds.map((id) => `current_status:${id}`)),
       this.prisma.check.groupBy({
         by: ["monitorId", "result"],
@@ -127,6 +127,10 @@ export class MonitorService {
       }),
     ]);
 
+    const statusMap = new Map<string, string | null>(
+      monitorIds.map((id, i) => [id as string, cachedValues[i]])
+    );
+
     // Index rows by monitorId for O(1) lookup during map
     const statsByMonitor = new Map<string, CheckStat[]>();
     for (const row of statsRows) {
@@ -135,7 +139,7 @@ export class MonitorService {
       statsByMonitor.set(row.monitorId, arr);
     }
 
-    return monitors.map((m, index) => {
+    return monitors.map((m) => {
       const { uptime24h, avgLatency24h } = this.computeStats(
         statsByMonitor.get(m.id) ?? [],
       );
@@ -143,7 +147,7 @@ export class MonitorService {
         ...m,
         createdAt: m.createdAt.toISOString(),
         updatedAt: m.updatedAt.toISOString(),
-        currentStatus: this.parseStatus(cachedStatuses[index]),
+        currentStatus: this.parseStatus(statusMap.get(m.id) ?? null),
         uptime24h,
         avgLatency24h,
       } satisfies MonitorDto;
@@ -195,14 +199,19 @@ export class MonitorService {
       }
     }
 
-    const cached = await this.redis.get(`current_status:${id}`);
+    const [cached, { uptime24h, avgLatency24h }] = await Promise.all([
+      this.redis.get(`current_status:${id}`),
+      this.calculateStats(id),
+    ]);
 
     return {
       ...updated,
       createdAt: updated.createdAt.toISOString(),
       updatedAt: updated.updatedAt.toISOString(),
       currentStatus: this.parseStatus(cached),
-    };
+      uptime24h,
+      avgLatency24h,
+    } satisfies MonitorDto;
   }
 
   async getStatus(

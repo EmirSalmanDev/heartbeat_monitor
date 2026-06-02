@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import IORedis from "ioredis";
+import { Redis as IORedis } from "ioredis";
 import { retentionService } from "../container.js";
 
 const connection = new IORedis(process.env.REDIS_URL!, {

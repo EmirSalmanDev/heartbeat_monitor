@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import { MonitorService } from "../services/MonitorService.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { createAuthMiddleware } from "../middleware/authMiddleware.js";
@@ -13,7 +13,7 @@ import {
 export function createMonitorRouter(
   monitorService: MonitorService,
   authService: AuthService,
-) {
+): Router {
   const router = Router();
   const auth = createAuthMiddleware(authService);
 

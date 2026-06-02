@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import { AuthService } from "../services/AuthService.js";
 import { asyncHandler } from "../middleware/asyncHandler.js";
 import { createAuthMiddleware } from "../middleware/authMiddleware.js";
@@ -11,7 +11,7 @@ const COOKIE_OPTIONS = {
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
-export function createAuthRouter(authService: AuthService) {
+export function createAuthRouter(authService: AuthService): Router {
   const router = Router();
   const auth = createAuthMiddleware(authService);
 

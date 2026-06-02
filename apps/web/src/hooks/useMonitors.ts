@@ -29,14 +29,14 @@ export function useMonitorStatus(id: string) {
   });
 }
 
-export function useMonitorChecks(id: string) {
+export function useMonitorChecks(id: string, page = 1, limit = 20) {
   return useQuery<
     { checks: CheckDto[]; total: number; page: number; limit: number },
     ApiRequestError
   >({
-    queryKey: ["monitors", id, "checks"],
+    queryKey: ["monitors", id, "checks", page, limit],
     queryFn: () =>
-      api.get(`/api/monitors/${id}/checks?page=1&limit=20`),
+      api.get(`/api/monitors/${id}/checks?page=${page}&limit=${limit}`),
     refetchInterval: 30_000,
     staleTime: 15_000,
   });
