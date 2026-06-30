@@ -20,12 +20,15 @@ export async function ping(url: string): Promise<PingResult> {
     const response = await fetch(url, {
       method: "HEAD",
       signal: controller.signal,
-      redirect: "follow",
+      redirect: "manual", // never follow redirects — redirect targets are not validated
       credentials: "omit",
     });
 
     const latencyMs = Date.now() - startMs;
     const statusCode = response.status;
+    // In Node.js fetch (undici), redirect: "manual" returns the actual redirect
+    // status code (e.g. 301) rather than an opaque status 0. The redirect is
+    // never followed, so the Location URL is never fetched — SSRF is prevented.
     const isUp =
       statusCode >= SUCCESS_STATUS_RANGE.min &&
       statusCode <= SUCCESS_STATUS_RANGE.max;
@@ -34,9 +37,7 @@ export async function ping(url: string): Promise<PingResult> {
       result: isUp ? "UP" : "DOWN",
       statusCode,
       latencyMs,
-      errorMsg: isUp
-        ? null
-        : `HTTP ${statusCode} ${response.statusText}`.trim(),
+      errorMsg: isUp ? null : `HTTP ${statusCode} ${response.statusText}`.trim(),
       checkedAt,
     };
   } catch (err: unknown) {
@@ -73,9 +74,12 @@ async function pingWithGet(url: string): Promise<PingResult> {
     const response = await fetch(url, {
       method: "GET",
       signal: controller.signal,
-      redirect: "follow",
+      redirect: "manual", // never follow redirects — redirect targets are not validated
       credentials: "omit",
     });
+
+    // Discard the body immediately — status code is all we need.
+    response.body?.cancel().catch(() => {});
 
     const latencyMs = Date.now() - startMs;
     const statusCode = response.status;
@@ -87,9 +91,7 @@ async function pingWithGet(url: string): Promise<PingResult> {
       result: isUp ? "UP" : "DOWN",
       statusCode,
       latencyMs,
-      errorMsg: isUp
-        ? null
-        : `HTTP ${statusCode} ${response.statusText}`.trim(),
+      errorMsg: isUp ? null : `HTTP ${statusCode} ${response.statusText}`.trim(),
       checkedAt,
     };
   } catch (err: unknown) {

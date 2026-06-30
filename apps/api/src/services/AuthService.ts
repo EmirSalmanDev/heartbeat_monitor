@@ -44,6 +44,10 @@ export class AuthService {
     });
   }
 
+  issueToken(userId: string): string {
+    return jwt.sign({ userId }, process.env.JWT_SECRET!, { expiresIn: "7d" });
+  }
+
   verifyToken(token: string): { userId: string } {
     return jwt.verify(token, process.env.JWT_SECRET!) as { userId: string };
   }

@@ -20,6 +20,8 @@ export function createAuthRouter(authService: AuthService) {
     asyncHandler(async (req, res) => {
       const { email, password } = RegisterSchema.parse(req.body);
       const user = await authService.register(email, password);
+      const token = authService.issueToken(user.id);
+      res.cookie("token", token, COOKIE_OPTIONS);
       res.status(201).json(ok({ message: "User created", user }));
     }),
   );

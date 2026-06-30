@@ -18,19 +18,21 @@ export class MetricsService {
       new Histogram({
         name: "sentinel_ping_latency_seconds",
         help: "Ping latency distribution",
-        labelNames: ["monitorId"],
+        // monitorId removed — using it as a histogram label causes unbounded
+        // cardinality (one time-series per monitor) which OOMs Prometheus.
+        labelNames: [],
         buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5],
       });
   }
 
   recordPing(
     status: "UP" | "DOWN",
-    monitorId: string,
+    _monitorId: string,
     latencyMs: number | null,
   ): void {
     this.pingCounter.labels({ status }).inc();
     if (latencyMs !== null) {
-      this.latencyHistogram.labels({ monitorId }).observe(latencyMs / 1000);
+      this.latencyHistogram.observe(latencyMs / 1000);
     }
   }
 

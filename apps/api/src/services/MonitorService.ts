@@ -1,14 +1,59 @@
+import { lookup } from "node:dns/promises";
 import { PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
 import {
   NotFoundError,
   ForbiddenError,
+  ValidationError,
   type CurrentStatus,
   type MonitorDto,
   type CheckDto,
   type UpdateMonitorInput,
 } from "@sentinel/shared";
 import { QueueService } from "./QueueService.js";
+
+const MAX_MONITORS_PER_USER = 50;
+
+function isSafePublicIp(ip: string): boolean {
+  const v4 = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    return !(
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+    );
+  }
+  // IPv6 loopback / ULA / link-local
+  const v6 = ip.toLowerCase();
+  if (
+    v6 === "::1" ||
+    v6.startsWith("fc") ||
+    v6.startsWith("fd") ||
+    v6.startsWith("fe80")
+  )
+    return false;
+  return true;
+}
+
+async function assertPublicUrl(rawUrl: string): Promise<void> {
+  const { hostname } = new URL(rawUrl);
+  let address: string;
+  try {
+    ({ address } = await lookup(hostname));
+  } catch {
+    throw new ValidationError(`Cannot resolve host: ${hostname}`);
+  }
+  if (!isSafePublicIp(address)) {
+    throw new ValidationError(
+      "URL must point to a publicly reachable address",
+    );
+  }
+}
 
 type CheckStat = {
   result: string;
@@ -87,6 +132,15 @@ export class MonitorService {
     data: { name: string; url: string; intervalSecs: number },
     userId: string,
   ): Promise<MonitorDto> {
+    const count = await this.prisma.monitor.count({ where: { userId } });
+    if (count >= MAX_MONITORS_PER_USER) {
+      throw new ValidationError(
+        `Monitor limit reached (max ${MAX_MONITORS_PER_USER} per user)`,
+      );
+    }
+
+    await assertPublicUrl(data.url);
+
     const monitor = await this.prisma.monitor.create({
       data: { ...data, userId },
     });
@@ -180,6 +234,10 @@ export class MonitorService {
     if (!existing) throw new NotFoundError("Monitor");
     if (existing.userId !== userId) throw new ForbiddenError();
 
+    if (data.url !== undefined) {
+      await assertPublicUrl(data.url);
+    }
+
     const updated = await this.prisma.monitor.update({ where: { id }, data });
 
     const shouldReschedule =
@@ -188,20 +246,24 @@ export class MonitorService {
       data.url !== undefined;
 
     if (shouldReschedule) {
-      // Eski intervalSecs ile kaldır — yeni değerle değil
       await this.queue.removeMonitor(id, existing.intervalSecs);
       if (updated.status !== "PAUSED") {
         await this.queue.scheduleMonitor(id, updated.url, updated.intervalSecs);
       }
     }
 
-    const cached = await this.redis.get(`current_status:${id}`);
+    const [cached, { uptime24h, avgLatency24h }] = await Promise.all([
+      this.redis.get(`current_status:${id}`),
+      this.calculateStats(id),
+    ]);
 
     return {
       ...updated,
       createdAt: updated.createdAt.toISOString(),
       updatedAt: updated.updatedAt.toISOString(),
       currentStatus: this.parseStatus(cached),
+      uptime24h,
+      avgLatency24h,
     };
   }
 

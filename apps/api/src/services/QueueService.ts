@@ -34,7 +34,15 @@ export class QueueService {
   }
 
   async removeMonitor(monitorId: string, intervalSecs: number) {
-    await this.queue.removeRepeatable("ping", { every: intervalSecs * 1000 });
+    // Pass jobId as the third argument so only this monitor's repeat job is
+    // removed. Without it, removeRepeatable matches by name+interval and would
+    // silently cancel every other monitor that shares the same intervalSecs.
+    await this.queue.removeRepeatable(
+      "ping",
+      { every: intervalSecs * 1000 },
+      `monitor-${monitorId}`,
+    );
+    // Also remove any pending one-time instance that may be queued.
     await this.queue.remove(`monitor-${monitorId}`);
   }
 }

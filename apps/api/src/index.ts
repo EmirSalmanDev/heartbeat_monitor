@@ -1,5 +1,5 @@
 import "dotenv/config";
-import express from "express";
+import express, { type Request, type Response, type NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
@@ -10,9 +10,28 @@ import { createAuthRouter } from "./routes/auth.js";
 import { createMonitorRouter } from "./routes/monitor.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
+// --- Startup assertions ---
+const JWT_PLACEHOLDER = "buraya_en_az_32_karakterlik_rastgele_string_yaz";
+const jwtSecret = process.env.JWT_SECRET ?? "";
+if (!jwtSecret || jwtSecret.length < 32 || jwtSecret === JWT_PLACEHOLDER) {
+  console.error(
+    "[API] FATAL: JWT_SECRET is missing, too short, or still set to the placeholder. " +
+    "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
+  );
+  process.exit(1);
+}
+
 const app = express();
 
-// middleware
+// Security headers (inline; avoids adding the helmet dependency)
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-XSS-Protection", "0"); // modern browsers ignore it; CSP is the real guard
+  next();
+});
+
 app.use(express.json());
 app.use(cookieParser()); // Required to read req.cookies.token
 
