@@ -5,7 +5,7 @@ help: ## Show available targets
 
 # ── Development ────────────────────────────────────────────────────────────────
 
-dev: ## Start API, worker, and web in parallel (Ctrl+C stops all three)
+dev: ## Start API, worker, and web in parallel 
 	@pnpm dev:api & P1=$$!; \
 	pnpm dev:worker & P2=$$!; \
 	pnpm dev:web & P3=$$!; \
