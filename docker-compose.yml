@@ -47,7 +47,12 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    command: ["sh", "-c", "cd /app/packages/db && npx prisma migrate deploy"]
+    # `pnpm exec`, not `npx`: npx resolves `prisma` from the registry when it is
+    # not installed locally, which silently pulled prisma 7.x against
+    # @prisma/client ^6. `pnpm exec` only ever runs the lockfile-pinned CLI that
+    # the image already carries, and fails loudly if it is missing.
+    command:
+      ["pnpm", "--filter", "@sentinel/db", "exec", "prisma", "migrate", "deploy"]
     env_file: .env
     depends_on:
       postgres:

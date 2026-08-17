@@ -65,6 +65,14 @@ COPY --from=builder /app/apps/api/dist ./apps/api/dist
 # node_modules was leaking into the build context via a missing .dockerignore.
 COPY --from=builder /app/packages/db/generated ./packages/db/generated
 
+# Copy the Prisma schema and migration history. `prisma migrate deploy` reads
+# both at runtime, and docker-compose.yml's `migrate` service runs exactly that
+# against this image. Without this the deployed stack cannot migrate at all:
+# `migrate` exits non-zero, and api and worker both gate on it via
+# `depends_on: migrate: condition: service_completed_successfully`, so neither
+# ever starts on a fresh instance.
+COPY --from=builder /app/packages/db/prisma ./packages/db/prisma
+
 EXPOSE 3001
 
 # Start app
