@@ -1,6 +1,7 @@
 import { PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
 import { pingWithFallback, type CurrentStatus } from "@sentinel/shared";
+import { AnomalyDetectionService } from "./AnomalyDetectionService.js";
 import { MetricsService } from "./MetricsService.js";
 
 export class PingService {
@@ -8,6 +9,7 @@ export class PingService {
     private prisma: PrismaClient,
     private redis: Redis,
     private metrics: MetricsService,
+    private anomalyDetection: AnomalyDetectionService,
   ) {}
 
   async execute(monitorId: string, url: string): Promise<void> {
@@ -46,5 +48,21 @@ export class PingService {
     );
 
     this.metrics.recordPing(result.result, monitorId, result.latencyMs);
+
+    // Anomaly detection is observational — it must never fail the ping job.
+    // Letting it throw would mark the BullMQ job failed and, on retry, write a
+    // duplicate Check row for a ping that already succeeded.
+    try {
+      await this.anomalyDetection.evaluate(
+        monitorId,
+        result.latencyMs,
+        result.result,
+      );
+    } catch (err) {
+      console.error(
+        `[AnomalyDetection] evaluate failed for monitor ${monitorId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 }

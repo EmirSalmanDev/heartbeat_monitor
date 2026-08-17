@@ -110,6 +110,16 @@ pnpm db:migrate      # create + apply a new migration (dev)
 pnpm db:studio       # open Prisma Studio in browser
 ```
 
+### Verification scripts
+
+The project has no test runner configured yet. Behavioural checks that don't
+need one are plain scripts, run against in-process fakes — no Postgres, no
+Redis, no extra dependencies:
+
+```bash
+pnpm --filter @sentinel/worker verify:anomaly   # AnomalyDetectionService
+```
+
 ---
 
 ## Redis

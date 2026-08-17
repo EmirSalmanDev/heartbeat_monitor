@@ -1,15 +1,24 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Sentinel — build & infrastructure plan
 #
-# Two jobs with deliberately different trust levels:
+# Three jobs with deliberately different trust levels:
 #
-#   build  — runs AUTOMATICALLY on push to main. Builds multi-arch images and
-#            pushes them to GHCR. Produces artifacts only; it never touches the
-#            running instance or any cloud resource, so it needs no gate.
+#   verify — runs on pull_request AND on push to main, and gates `build`. Pure
+#            in-process checks against fakes: no database, no Redis, no
+#            secrets, no network. That is what makes it safe to run on PRs from
+#            forks, where the token is read-only and no secret is exposed.
+#
+#   build  — runs AUTOMATICALLY on push to main ONLY. Never on pull_request: it
+#            holds `packages: write` and pushes images to GHCR, which no PR
+#            branch — least of all a fork's — should be able to trigger.
 #
 #   plan   — NEVER runs automatically. workflow_dispatch only, and additionally
 #            gated on a protected GitHub Environment. Read-only against the
 #            tenancy: fmt, validate, plan. No apply.
+#
+# Every job carries an explicit `github.event_name` guard. The `on:` block is
+# the union of all three jobs' triggers, so without those guards, adding a
+# trigger for one job silently starts the others.
 #
 # There is still NO deploy/apply job. Adding one means a job with `environment:`
 # set to a protected Environment with required reviewers, so the run pauses for
@@ -26,6 +35,20 @@ on:
       - "**/*.md"
       - "infra/terraform/**"
       - ".github/workflows/**"
+  pull_request:
+    branches: [main]
+    # Deliberately NOT the same ignore list as `push` above.
+    #
+    # `.github/workflows/**` is missing here on purpose: on `push` it is ignored
+    # because a workflow edit changes no image, but on a PR that reasoning
+    # inverts — a PR that edits CI is exactly the one where CI must run, and it
+    # is the only chance to see the change execute before it lands on main.
+    #
+    # Docs and terraform stay ignored: `verify` is a worker-code check and says
+    # nothing about either.
+    paths-ignore:
+      - "**/*.md"
+      - "infra/terraform/**"
   workflow_dispatch:
     inputs:
       image_tag:
@@ -44,12 +67,99 @@ env:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
+  # verify — automatic, gates the image build
+  #
+  # A separate job rather than a step inside `build`, for three reasons:
+  #   1. `build` installs nothing on the runner — it is pure buildx, and every
+  #      dependency is installed inside the Dockerfile. A verify step there
+  #      would mean adding Node + corepack + a full pnpm install to a job that
+  #      currently needs none of it.
+  #   2. `build` is a 3-way matrix (api/web/worker). A step would run these
+  #      worker checks three times, twice for images they say nothing about.
+  #   3. As its own job it gates all three images at once and reports as its
+  #      own check, instead of being buried in one matrix leg's log.
+  #
+  # The cost is that image builds wait on it. That is the intended trade: a
+  # `latest` tag should not reach GHCR from code that fails verification.
+  # ───────────────────────────────────────────────────────────────────────────
+  verify:
+    name: verify (worker)
+    runs-on: ubuntu-latest
+    # The only job that runs on PRs. Still excluded from workflow_dispatch,
+    # which is the terraform-plan path and has nothing to do with worker code.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    permissions:
+      contents: read # no packages, no secrets — see below
+
+    concurrency:
+      group: verify-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20 # matches engines.node and the Dockerfile's node:20
+
+      # corepack after setup-node, so the shims point at the Node installed
+      # above rather than the runner's preinstalled one. Version comes from the
+      # "packageManager" field, same as the Dockerfiles.
+      - name: Enable pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm --filter` exits 0 when the filter matches no package, and `pnpm
+      # run` exits 0 when the script does not exist ("None of the selected
+      # packages has a ... script"). Either typo would therefore produce a green
+      # job that ran nothing at all. Assert both names before relying on them.
+      - name: Assert the verify script exists
+        run: |
+          node -e '
+            const pkg = require("./apps/worker/package.json");
+            const NAME = "@sentinel/worker";
+            const SCRIPT = "verify:anomaly";
+            if (pkg.name !== NAME) {
+              throw new Error(`expected package name ${NAME}, found ${pkg.name}`);
+            }
+            if (!pkg.scripts || !pkg.scripts[SCRIPT]) {
+              throw new Error(`apps/worker/package.json has no "${SCRIPT}" script`);
+            }
+            console.log(`ok: ${NAME} defines ${SCRIPT} -> ${pkg.scripts[SCRIPT]}`);
+          '
+
+      # Needs no database, Redis, or secrets: the script substitutes in-process
+      # fakes for both clients and never opens a connection. It also does not
+      # need `prisma generate` — PrismaClient and Redis appear only in type
+      # position, so the transpiler drops both imports. Both confirmed by
+      # running it with no env vars and with packages/db/generated removed.
+      #
+      # No `continue-on-error` and no `|| true`: a non-zero exit from any check
+      # fails this step, which fails the job, which blocks `build`.
+      - name: Run anomaly detection checks
+        run: pnpm --filter @sentinel/worker verify:anomaly
+
+  # ───────────────────────────────────────────────────────────────────────────
   # build — automatic, no approval gate
   # ───────────────────────────────────────────────────────────────────────────
   build:
     name: build ${{ matrix.image }} (multi-arch)
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+
+    # Belt and braces, the same way `plan` is guarded against the push trigger.
+    # The event check alone is what keeps a pull_request from ever reaching a
+    # job that holds `packages: write`. The ref check is the second layer: if
+    # the push trigger's `branches:` list is ever widened, this job still only
+    # publishes images from main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
 
     permissions:
       contents: read
