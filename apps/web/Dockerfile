@@ -2,6 +2,8 @@
 FROM node:20.19-alpine AS builder
 WORKDIR /app
 
+# Version comes from the "packageManager" field in package.json.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN corepack enable
 
 # Manifest

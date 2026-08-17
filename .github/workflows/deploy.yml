@@ -21,7 +21,7 @@ name: Build & Infrastructure Plan
 on:
   push:
     branches: [main]
-    # Docs-only pushes should not burn ~30 min of emulated ARM build time.
+    # Docs- and infra-only pushes don't change any image, so skip the build.
     paths-ignore:
       - "**/*.md"
       - "infra/terraform/**"
@@ -75,11 +75,11 @@ jobs:
         uses: actions/checkout@v4
 
       # linux/arm64 is the deployment target (OCI Ampere A1 is aarch64) and is
-      # built here under QEMU emulation on an amd64 runner. This is the slow
-      # part — pnpm install + tsc emulated runs roughly 5-10x native. If it
-      # becomes painful, the fix is native ARM runners: split into a per-arch
-      # matrix with runs-on ubuntu-24.04-arm and merge with `docker buildx
-      # imagetools create`. Free for public repos, paid plans for private.
+      # built here under QEMU emulation on an amd64 runner. Measured locally on
+      # the equivalent cross path: ~60s for worker, ~20s for web, so emulation
+      # is not a bottleneck at this size. If that changes, the fix is native ARM
+      # runners: a per-arch matrix on ubuntu-24.04-arm merged with `docker
+      # buildx imagetools create`.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:

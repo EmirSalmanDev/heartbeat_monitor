@@ -3,8 +3,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
+# Enable pnpm via corepack. The version comes from the "packageManager"
+# field in package.json, so builder and runner cannot drift from the lockfile.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
 # Copy manifests (for caching)
 COPY pnpm-workspace.yaml ./
@@ -35,8 +37,10 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
+# Enable pnpm via corepack. The version comes from the "packageManager"
+# field in package.json, so builder and runner cannot drift from the lockfile.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
 # Copy manifests from builder (deterministic)
 COPY --from=builder /app/package.json ./

@@ -6,6 +6,7 @@
     "node": ">=20",
     "pnpm": ">=9"
   },
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev:api": "pnpm --filter @sentinel/api dev",
     "dev:worker": "pnpm --filter @sentinel/worker dev",
