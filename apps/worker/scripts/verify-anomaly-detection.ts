@@ -148,7 +148,7 @@ async function latencySpikeTests(): Promise<void> {
   console.log("\nLatency spike");
 
   await test(
-    "fires exactly once, on the spike ping and not before",
+    "fires once, and only after the spike persists for two pings",
     async () => {
       const { prisma, service } = build();
 
@@ -163,7 +163,15 @@ async function latencySpikeTests(): Promise<void> {
         );
       }
 
-      // The deliberate spike.
+      // First out-of-band ping: an outlier, not yet a condition.
+      await service.evaluate(MONITOR_ID, 900, "UP");
+      assert.equal(
+        prisma.events.length,
+        0,
+        "a single out-of-band ping should not fire on its own",
+      );
+
+      // Second consecutive out-of-band ping: now it is a condition.
       await service.evaluate(MONITOR_ID, 900, "UP");
 
       assert.equal(prisma.events.length, 1, "expected exactly one event");
@@ -171,9 +179,11 @@ async function latencySpikeTests(): Promise<void> {
       assert.equal(event.type, "LATENCY_SPIKE");
       assert.equal(event.monitorId, MONITOR_ID);
       assert.equal(event.value, 900, "value should be the observed latency");
+      // The baseline has already absorbed 30% of the first spike ping, so it
+      // sits between the old level and the new one rather than at ~100ms.
       assert.ok(
-        event.baseline > 90 && event.baseline < 110,
-        `baseline should be the pre-spike EWMA (~100ms), got ${event.baseline}`,
+        event.baseline > 300 && event.baseline < 400,
+        `baseline should be the EWMA before this ping (~340ms), got ${event.baseline}`,
       );
     },
   );
@@ -181,7 +191,7 @@ async function latencySpikeTests(): Promise<void> {
   await test("does not fire during warmup, before MIN_SAMPLES", async () => {
     const { prisma, service } = build();
     // A spike on the 3rd ping: real deviation, but no trustworthy baseline yet.
-    for (const latency of [100, 102, 900]) {
+    for (const latency of [100, 102, 900, 900]) {
       await service.evaluate(MONITOR_ID, latency, "UP");
     }
     assert.equal(prisma.events.length, 0, "should stay silent during warmup");
@@ -193,6 +203,32 @@ async function latencySpikeTests(): Promise<void> {
       await service.evaluate(MONITOR_ID, 100 + (i % 5) - 2, "UP");
     }
     assert.equal(prisma.events.length, 0, "jitter should not be an anomaly");
+  });
+
+  await test("a large isolated outlier reports once, not once per ping", async () => {
+    // Worth being precise about what the consecutive-sample rule does and does
+    // not buy, because it is easy to assume it suppresses one-ping outliers.
+    //
+    // It does not. A 9x outlier drags the EWMA a long way (100 -> 340), and the
+    // baseline then lags for several pings, so the *recovery* pings read as
+    // out-of-band too. The streak re-arms and would fire every second ping all
+    // the way back down. What the consecutive rule actually suppresses is
+    // marginal noise crossings, where the EWMA barely moves and the next sample
+    // lands back inside the band.
+    //
+    // The cooldown is what bounds the recovery tail to a single row — which is
+    // exactly the flood this event type previously had no defence against.
+    const { prisma, service } = build();
+    for (let i = 0; i < 12; i++) await service.evaluate(MONITOR_ID, 100, "UP");
+
+    await service.evaluate(MONITOR_ID, 900, "UP"); // the outlier
+    for (let i = 0; i < 15; i++) await service.evaluate(MONITOR_ID, 100, "UP");
+
+    assert.equal(
+      prisma.events.length,
+      1,
+      `the outlier and its recovery tail are one event, got ${prisma.events.length}`,
+    );
   });
 
   await test("a sustained shift fires once, then adapts", async () => {
@@ -357,6 +393,7 @@ async function keyIsolationTests(): Promise<void> {
       advance(1000);
     }
     await service.evaluate(MONITOR_ID, 900, "UP");
+    await service.evaluate(MONITOR_ID, 900, "UP");
     for (const status of ["DOWN", "UP", "DOWN", "UP", "DOWN"] as const) {
       await service.evaluate(MONITOR_ID, status === "UP" ? 100 : null, status);
       advance(60_000);
@@ -377,6 +414,7 @@ async function keyIsolationTests(): Promise<void> {
     const { redis, service, advance } = build();
     for (let i = 0; i < 12; i++) await service.evaluate(MONITOR_ID, 100, "UP");
     await service.evaluate(MONITOR_ID, 900, "UP");
+    await service.evaluate(MONITOR_ID, 900, "UP");
     for (const status of ["DOWN", "UP", "DOWN", "UP", "DOWN"] as const) {
       await service.evaluate(MONITOR_ID, status === "UP" ? 100 : null, status);
       advance(60_000);
@@ -384,6 +422,7 @@ async function keyIsolationTests(): Promise<void> {
 
     const allowed = [
       `rolling_stats:${MONITOR_ID}`,
+      `spike_alerted:${MONITOR_ID}`,
       `flap_window:${MONITOR_ID}`,
       `flap_last:${MONITOR_ID}`,
       `flap_alerted:${MONITOR_ID}`,
