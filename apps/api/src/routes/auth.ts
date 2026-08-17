@@ -11,7 +11,9 @@ const COOKIE_OPTIONS = {
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
-export function createAuthRouter(authService: AuthService) {
+// Explicit return type: without it tsc infers a type it cannot name without
+// referencing a .pnpm-internal path (TS2742), which is not portable.
+export function createAuthRouter(authService: AuthService): Router {
   const router = Router();
   const auth = createAuthMiddleware(authService);
 

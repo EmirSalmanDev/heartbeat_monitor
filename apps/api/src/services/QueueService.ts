@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
-import Redis from "ioredis";
+// Named import — see the note in lib/redis.ts.
+import { Redis } from "ioredis";
 
 export class QueueService {
   private queue: Queue;

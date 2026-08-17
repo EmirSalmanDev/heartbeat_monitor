@@ -1,0 +1,37 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored —
+# it holds tenancy identifiers and the path to your API signing key.
+
+# ─── Provider auth (OCI console → Profile → API Keys) ─────────────────────────
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaaaaaa"
+user_ocid        = "ocid1.user.oc1..aaaaaaaa"
+fingerprint      = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "eu-frankfurt-1"
+compartment_ocid = "ocid1.compartment.oc1..aaaaaaaa"
+
+# ─── Network ──────────────────────────────────────────────────────────────────
+# Your own address. `curl -s ifconfig.me` — do not use 0.0.0.0/0.
+ssh_ingress_cidr = "203.0.113.4/32"
+
+# ─── Compute ──────────────────────────────────────────────────────────────────
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@example.com"
+
+# Within the Always Free allowance (4 OCPU / 24GB / 200GB across the tenancy).
+instance_ocpus       = 2
+instance_memory_gbs  = 12
+boot_volume_size_gbs = 100
+
+# Set only if apply fails with "Out of host capacity" — try each AD in turn.
+# availability_domain = "abcd:EU-FRANKFURT-1-AD-1"
+
+# ─── Application ──────────────────────────────────────────────────────────────
+registry  = "ghcr.io/emirsalmandev"
+image_tag = "latest"
+
+# ─── DNS (optional) ───────────────────────────────────────────────────────────
+# Only if the domain's nameservers point at OCI DNS. For Cloudflare/Namecheap,
+# leave this false and create the A record there against the public_ip output.
+enable_dns = false
+# dns_zone_name   = "example.com"
+# dns_record_name = "sentinel.example.com"
+# dns_create_zone = false

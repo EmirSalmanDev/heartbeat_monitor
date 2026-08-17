@@ -10,10 +10,11 @@ import {
   ok,
 } from "@sentinel/shared";
 
+// Explicit return type — see the note in auth.ts (TS2742).
 export function createMonitorRouter(
   monitorService: MonitorService,
   authService: AuthService,
-) {
+): Router {
   const router = Router();
   const auth = createAuthMiddleware(authService);
 

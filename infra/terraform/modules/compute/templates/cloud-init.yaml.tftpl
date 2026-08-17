@@ -1,0 +1,166 @@
+#cloud-config
+# ─────────────────────────────────────────────────────────────────────────────
+# Sentinel — Ampere A1 (aarch64) bootstrap
+#
+# What this does:
+#   1. Installs Docker Engine + the Compose v2 plugin (arm64 repo).
+#   2. Materialises the real docker-compose.yml and nginx/nginx.conf from the
+#      repo — passed in as base64 by the compute module, so the instance runs
+#      exactly what is committed, not a hand-copied drift.
+#   3. Writes /opt/sentinel/.env with EMPTY placeholders (mode 0600).
+#   4. Installs, and *enables but does not start*, sentinel.service.
+#
+# The stack does NOT come up on first boot, by design. .env has no secrets in
+# it yet, so starting would initialise the Postgres volume with an empty
+# password and bake that into the data directory. Fill in .env over SSH, then:
+#     sudo systemctl start sentinel
+# ─────────────────────────────────────────────────────────────────────────────
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - iptables-persistent
+
+write_files:
+  # ── Application stack, verbatim from the repo ──────────────────────────────
+  - path: /opt/sentinel/docker-compose.yml
+    encoding: b64
+    content: ${compose_file_b64}
+    owner: root:root
+    permissions: "0644"
+
+  - path: /opt/sentinel/nginx/nginx.conf
+    encoding: b64
+    content: ${nginx_conf_b64}
+    owner: root:root
+    permissions: "0644"
+
+  # ── Secrets placeholder ────────────────────────────────────────────────────
+  # Keys mirror .env.example exactly. Left blank on purpose; see header.
+  - path: /opt/sentinel/.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      # ─── PostgreSQL ─────────────────────────────────────────────────────────
+      POSTGRES_USER=sentinel
+      POSTGRES_PASSWORD=
+      POSTGRES_DB=sentinel_db
+      # Rebuild this URL once POSTGRES_PASSWORD is set. The connection_limit=3
+      # matters: api + worker + migrate each open a pool against a container
+      # Postgres with the default max_connections of 100.
+      DATABASE_URL="postgresql://sentinel:CHANGEME@postgres:5432/sentinel_db?connection_limit=3"
+
+      # ─── Redis ──────────────────────────────────────────────────────────────
+      REDIS_URL="redis://redis:6379"
+
+      # ─── Auth ───────────────────────────────────────────────────────────────
+      JWT_SECRET=
+      JWT_EXPIRES_IN=7d
+      COOKIE_SECRET=
+
+      # ─── App ────────────────────────────────────────────────────────────────
+      NODE_ENV=production
+      # Must match apps/api's default and what nginx.conf/docker-compose.yml
+      # expect the api container to listen on (3001), not the 3000 in
+      # apps/api's .env.example.
+      PORT=3001
+
+      # ─── Image registry ─────────────────────────────────────────────────────
+      # Consumed by docker-compose.yml. Override IMAGE_TAG to pin a release.
+      REGISTRY=${registry}
+      IMAGE_TAG=${image_tag}
+
+  # ── systemd unit ───────────────────────────────────────────────────────────
+  - path: /etc/systemd/system/sentinel.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Sentinel heartbeat monitor stack
+      Requires=docker.service
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/sentinel
+      # Refuse to start against a half-filled .env rather than initialising the
+      # Postgres volume with an empty password.
+      ExecStartPre=/usr/local/bin/sentinel-preflight
+      ExecStart=/usr/bin/docker compose pull
+      ExecStart=/usr/bin/docker compose up -d --remove-orphans
+      ExecStop=/usr/bin/docker compose down
+      TimeoutStartSec=0
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /usr/local/bin/sentinel-preflight
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      ENV_FILE=/opt/sentinel/.env
+
+      missing=()
+      for key in POSTGRES_PASSWORD JWT_SECRET COOKIE_SECRET; do
+        value="$(grep -E "^$${key}=" "$${ENV_FILE}" | cut -d= -f2- || true)"
+        if [ -z "$${value}" ]; then
+          missing+=("$${key}")
+        fi
+      done
+
+      if [ $${#missing[@]} -gt 0 ]; then
+        echo "sentinel: refusing to start — unset in $${ENV_FILE}: $${missing[*]}" >&2
+        exit 1
+      fi
+
+      if grep -q 'CHANGEME' "$${ENV_FILE}"; then
+        echo "sentinel: refusing to start — DATABASE_URL still contains CHANGEME" >&2
+        exit 1
+      fi
+
+runcmd:
+  # ── Docker Engine + Compose plugin (arm64) ─────────────────────────────────
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - |
+    echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+      > /etc/apt/sources.list.d/docker.list
+  - apt-get update -y
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu
+
+  # ── Host firewall ──────────────────────────────────────────────────────────
+  # OCI's Ubuntu images ship an iptables INPUT chain ending in a REJECT rule.
+  # The security list alone is not enough; 80/443 must be inserted ABOVE that
+  # reject or nginx is unreachable despite a correct security list.
+  - iptables -I INPUT 6 -p tcp --dport 80 -m state --state NEW -j ACCEPT
+  - iptables -I INPUT 7 -p tcp --dport 443 -m state --state NEW -j ACCEPT
+  - netfilter-persistent save
+
+  # ── Stack ──────────────────────────────────────────────────────────────────
+  - systemctl daemon-reload
+  # enable, NOT --now: .env is still empty at this point.
+  - systemctl enable sentinel.service
+  - |
+    cat > /etc/motd <<'EOF'
+    ┌─────────────────────────────────────────────────────────────┐
+    │ Sentinel — stack is INSTALLED but NOT RUNNING.              │
+    │                                                             │
+    │   1. sudo vi /opt/sentinel/.env      # fill in the blanks    │
+    │   2. sudo docker login ghcr.io       # if images are private │
+    │   3. sudo systemctl start sentinel                          │
+    │   4. sudo docker compose -f /opt/sentinel/docker-compose.yml ps
+    └─────────────────────────────────────────────────────────────┘
+    EOF
+
+final_message: "Sentinel bootstrap finished after $UPTIME s. Stack is enabled but not started — see /etc/motd."

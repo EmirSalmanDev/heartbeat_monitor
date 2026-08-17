@@ -1,0 +1,35 @@
+# Docker COPY does not respect .gitignore — without this file, the local
+# macOS node_modules trees get copied into the image and overwrite the
+# symlinks pnpm just created inside it. The copied symlinks point into the
+# host's pnpm store, which does not exist in the container, so builds fail
+# with confusing "not constructable" / "cannot find package" type errors.
+
+**/node_modules
+**/dist
+**/.vite
+
+# Generated inside the image by `prisma generate`.
+packages/db/generated
+
+# Secrets — must never enter an image layer.
+.env
+**/.env
+*.env.local
+*.pem
+
+.git
+.github
+.gitignore
+
+# Infra and docs are not part of any application build context.
+infra
+nginx
+scratchpad
+*.md
+Makefile
+docker-compose.yml
+
+**/.DS_Store
+**/*.log
+coverage
+.pnpm-store

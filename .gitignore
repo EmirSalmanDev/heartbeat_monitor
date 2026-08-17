@@ -6,6 +6,7 @@ dist/
 coverage/
 *.log
 .DS_Store
+scratchpad/
 
 # Prisma
 packages/db/generated/
@@ -13,3 +14,22 @@ packages/db/generated/
 # Docker volumes
 postgres_data/
 redis_data/
+
+# Terraform
+# .terraform.lock.hcl is intentionally NOT ignored — it pins provider versions
+# and is recorded for both darwin_arm64 (dev) and linux_amd64 (CI runners).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+plan.txt
+crash.log
+# Holds tenancy OCIDs and the path to the API signing key.
+terraform.tfvars
+*.auto.tfvars
+!terraform.tfvars.example
+
+# OCI credentials — never commit the API signing key.
+*.pem
+.oci/

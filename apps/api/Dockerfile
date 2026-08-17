@@ -3,8 +3,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
+# Enable pnpm via corepack. The version comes from the "packageManager"
+# field in package.json, so builder and runner cannot drift from the lockfile.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
 # Copy manifests (for caching)
 COPY pnpm-workspace.yaml ./
@@ -35,8 +37,10 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Install pnpm
-RUN npm install -g pnpm
+# Enable pnpm via corepack. The version comes from the "packageManager"
+# field in package.json, so builder and runner cannot drift from the lockfile.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
 # Copy manifests from builder (deterministic)
 COPY --from=builder /app/package.json ./
@@ -53,9 +57,13 @@ RUN pnpm install --frozen-lockfile --prod
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 
-# Copy generated Prisma client and engine files
+# Copy generated Prisma client and engine files.
+# schema.prisma sets `output = "../generated/client"`, so `prisma generate`
+# emits the client AND the query engine binary into packages/db/generated —
+# nothing is written to node_modules/.prisma. The previous
+# `COPY /app/node_modules/.prisma` only ever succeeded because the host's
+# node_modules was leaking into the build context via a missing .dockerignore.
 COPY --from=builder /app/packages/db/generated ./packages/db/generated
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 EXPOSE 3001
 

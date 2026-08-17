@@ -1,0 +1,245 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Sentinel — build & infrastructure plan
+#
+# Two jobs with deliberately different trust levels:
+#
+#   build  — runs AUTOMATICALLY on push to main. Builds multi-arch images and
+#            pushes them to GHCR. Produces artifacts only; it never touches the
+#            running instance or any cloud resource, so it needs no gate.
+#
+#   plan   — NEVER runs automatically. workflow_dispatch only, and additionally
+#            gated on a protected GitHub Environment. Read-only against the
+#            tenancy: fmt, validate, plan. No apply.
+#
+# There is still NO deploy/apply job. Adding one means a job with `environment:`
+# set to a protected Environment with required reviewers, so the run pauses for
+# human approval before anything is provisioned or restarted.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Build & Infrastructure Plan
+
+on:
+  push:
+    branches: [main]
+    # Docs- and infra-only pushes don't change any image, so skip the build.
+    paths-ignore:
+      - "**/*.md"
+      - "infra/terraform/**"
+      - ".github/workflows/**"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to plan against"
+        required: false
+        default: "latest"
+
+# Least privilege at the workflow level; `build` widens this for itself only.
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.9.8"
+  WORKING_DIR: infra/terraform/environments/prod
+  REGISTRY: ghcr.io
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # build — automatic, no approval gate
+  # ───────────────────────────────────────────────────────────────────────────
+  build:
+    name: build ${{ matrix.image }} (multi-arch)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write # scoped to this job: only `build` may push to GHCR
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            dockerfile: apps/api/Dockerfile
+          - image: worker
+            dockerfile: apps/worker/Dockerfile
+          - image: web
+            dockerfile: apps/web/Dockerfile
+
+    concurrency:
+      group: build-${{ matrix.image }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # linux/arm64 is the deployment target (OCI Ampere A1 is aarch64) and is
+      # built here under QEMU emulation on an amd64 runner. Measured locally on
+      # the equivalent cross path: ~60s for worker, ~20s for web, so emulation
+      # is not a bottleneck at this size. If that changes, the fix is native ARM
+      # runners: a per-arch matrix on ubuntu-24.04-arm merged with `docker
+      # buildx imagetools create`.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # metadata-action lowercases the image name for us — GHCR rejects
+      # uppercase paths, and the owner here is "EmirSalmanDev".
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/sentinel-${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+            type=ref,event=branch
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # Keeps the manifest list to the two real platforms. Default
+          # provenance adds unknown/unknown entries that confuse `docker
+          # manifest inspect` and the Compose pull on the instance.
+          provenance: false
+
+      - name: Summarise
+        run: |
+          {
+            echo "### sentinel-${{ matrix.image }}"
+            echo "Platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # plan — manual only, read-only against the tenancy
+  # ───────────────────────────────────────────────────────────────────────────
+  plan:
+    name: terraform plan (prod)
+    runs-on: ubuntu-latest
+
+    # Belt and braces: the `push` trigger above must never start this job.
+    # Without this guard, adding the trigger for `build` would silently make
+    # terraform plan run automatically too.
+    if: github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: read
+
+    concurrency:
+      group: terraform-plan-prod
+      cancel-in-progress: false
+
+    # Gate even the plan behind a GitHub Environment. Plan needs real read
+    # credentials against the tenancy, so the secrets live here and approval
+    # rules on the environment apply before they are exposed to the job.
+    environment: prod-plan
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # fmt and validate need no credentials, so they run first and fail fast
+      # before anything touches the tenancy.
+      - name: terraform fmt -check
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform fmt -check -recursive ../..
+
+      - name: terraform init (no backend)
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform validate -no-color
+
+      # ── Credentialed steps ───────────────────────────────────────────────
+      # Passed through `env`, not interpolated into the script body: a secret
+      # expanded directly into `run:` is visible in the rendered command and
+      # breaks the runner's log masking if it contains shell metacharacters.
+      - name: Write API signing key
+        env:
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          install -m 0700 -d "$RUNNER_TEMP/oci"
+          printf '%s' "$OCI_PRIVATE_KEY" > "$RUNNER_TEMP/oci/key.pem"
+          chmod 0600 "$RUNNER_TEMP/oci/key.pem"
+
+      - name: terraform init (remote state)
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_ACCESS_KEY }}
+        run: terraform init -input=false
+
+      - name: terraform plan
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_ACCESS_KEY }}
+          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_region: ${{ secrets.OCI_REGION }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          TF_VAR_ssh_ingress_cidr: ${{ secrets.SSH_INGRESS_CIDR }}
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          TF_VAR_image_tag: ${{ inputs.image_tag }}
+        run: |
+          terraform plan \
+            -input=false \
+            -no-color \
+            -lock=false \
+            -var="private_key_path=$RUNNER_TEMP/oci/key.pem" \
+            -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Publish plan to job summary
+        if: always()
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          {
+            echo '## Terraform plan — prod'
+            echo '```terraform'
+            # Truncated: a full plan can exceed the 1MB summary limit.
+            head -c 900000 plan.txt || echo '(no plan produced)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The binary plan file is NOT uploaded as an artifact: it embeds resolved
+      # variable values, and plan artifacts are a well-known way to leak them.
+      - name: Upload plan (text)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod-txt
+          path: ${{ env.WORKING_DIR }}/plan.txt
+          retention-days: 7
