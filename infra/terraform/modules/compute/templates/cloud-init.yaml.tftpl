@@ -64,7 +64,10 @@ write_files:
 
       # ─── App ────────────────────────────────────────────────────────────────
       NODE_ENV=production
-      PORT=3000
+      # Must match apps/api's default and what nginx.conf/docker-compose.yml
+      # expect the api container to listen on (3001), not the 3000 in
+      # apps/api's .env.example.
+      PORT=3001
 
       # ─── Image registry ─────────────────────────────────────────────────────
       # Consumed by docker-compose.yml. Override IMAGE_TAG to pin a release.

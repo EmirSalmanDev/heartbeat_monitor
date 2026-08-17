@@ -1,16 +1,19 @@
 variable "tenancy_ocid" {
   description = "OCID of the tenancy."
   type        = string
+  sensitive   = true
 }
 
 variable "user_ocid" {
   description = "OCID of the user whose API signing key is used."
   type        = string
+  sensitive   = true
 }
 
 variable "fingerprint" {
   description = "Fingerprint of the API signing key."
   type        = string
+  sensitive   = true
 }
 
 variable "private_key_path" {

@@ -3,16 +3,19 @@
 variable "tenancy_ocid" {
   description = "OCID of the tenancy."
   type        = string
+  sensitive   = true
 }
 
 variable "user_ocid" {
   description = "OCID of the user whose API signing key is used."
   type        = string
+  sensitive   = true
 }
 
 variable "fingerprint" {
   description = "Fingerprint of the API signing key."
   type        = string
+  sensitive   = true
 }
 
 variable "private_key_path" {
@@ -39,6 +42,7 @@ variable "compartment_ocid" {
 variable "ssh_ingress_cidr" {
   description = "CIDR allowed to reach port 22. Set to your own address, e.g. \"203.0.113.4/32\"."
   type        = string
+  sensitive   = true
 }
 
 # ─── Compute ──────────────────────────────────────────────────────────────────
@@ -70,6 +74,7 @@ variable "boot_volume_size_gbs" {
 variable "ssh_public_key" {
   description = "SSH public key authorised for the 'ubuntu' user, e.g. file(\"~/.ssh/id_ed25519.pub\")."
   type        = string
+  sensitive   = true
 }
 
 # ─── Application ──────────────────────────────────────────────────────────────
