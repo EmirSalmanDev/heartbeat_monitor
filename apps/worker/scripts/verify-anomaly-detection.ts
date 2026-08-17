@@ -1,14 +1,21 @@
 /**
  * Behavioural verification for AnomalyDetectionService.
  *
- * This repo has no test runner wired up (see README note added with this
- * commit), so this is a standalone script rather than a unit test file: run it
- * with `pnpm --filter @sentinel/worker verify:anomaly`. It adds no dependencies
- * and needs neither Postgres nor Redis — both are replaced with in-process
- * fakes, so it is safe to run anywhere, including CI.
+ * This repo has no test runner wired up, so this is a standalone script rather
+ * than a unit test file: run it with
+ * `pnpm --filter @sentinel/worker verify:anomaly`. It adds no dependencies and
+ * needs neither Postgres nor Redis — both are replaced with in-process fakes,
+ * so it is safe to run anywhere, including CI.
  *
  * It lives outside src/ because tsconfig sets rootDir: ./src, so nothing here
  * is compiled into dist/ or shipped in the worker image.
+ *
+ * ── A caveat worth knowing ──────────────────────────────────────────────────
+ * The rolling-stats update runs as a Lua script inside Redis in production.
+ * FakeRedis cannot execute Lua, so `eval` below is a hand-written JS mirror of
+ * that script. The mirror can drift from the real thing; it is here to exercise
+ * the *service's* behaviour and its atomicity contract, not to prove the Lua
+ * itself is correct. Changes to ROLLING_STATS_LUA must be mirrored by hand.
  */
 
 import assert from "node:assert/strict";
@@ -34,54 +41,124 @@ class FakePrisma {
   };
 }
 
-/** Minimal ioredis stand-in covering exactly the commands the service issues. */
+/** Yields to the event loop, so overlapping calls really do interleave. */
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+interface Entry {
+  value: string;
+  /** Absolute expiry in ms on the injected clock; null means no TTL. */
+  expiresAt: number | null;
+}
+
+/**
+ * Minimal ioredis stand-in covering exactly the commands the service issues.
+ *
+ * Two things it models deliberately, because the service's correctness depends
+ * on them and a simpler fake would hide bugs:
+ *
+ *  - TTLs actually expire, against the same injected clock the service uses.
+ *    Without this, no cooldown is ever really tested — "fires exactly once"
+ *    would hold by construction over a short simulated span.
+ *  - Every command yields to the event loop before touching state, so two
+ *    overlapping calls genuinely interleave. `eval` holds a lock across its
+ *    whole body, which is what makes it a valid stand-in for Redis executing a
+ *    Lua script atomically.
+ */
 class FakeRedis {
-  strings = new Map<string, string>();
-  zsets = new Map<string, Map<string, number>>();
+  strings = new Map<string, Entry>();
+  zsets = new Map<string, { members: Map<string, number>; expiresAt: number | null }>();
   /** Every key the service has ever written, for the collision check. */
   touched = new Set<string>();
+  /** Serializes eval, mirroring Redis's single-threaded script execution. */
+  private lock: Promise<unknown> = Promise.resolve();
 
-  async get(key: string): Promise<string | null> {
-    return this.strings.get(key) ?? null;
+  constructor(private now: () => number = () => Date.now()) {}
+
+  private live(key: string): Entry | null {
+    const e = this.strings.get(key);
+    if (!e) return null;
+    if (e.expiresAt !== null && this.now() >= e.expiresAt) {
+      this.strings.delete(key);
+      return null;
+    }
+    return e;
   }
 
-  async setex(key: string, _ttl: number, value: string): Promise<"OK"> {
+  private liveZset(key: string) {
+    const z = this.zsets.get(key);
+    if (!z) return null;
+    if (z.expiresAt !== null && this.now() >= z.expiresAt) {
+      this.zsets.delete(key);
+      return null;
+    }
+    return z;
+  }
+
+  private ttlAt(seconds: number): number {
+    return this.now() + seconds * 1000;
+  }
+
+  async get(key: string): Promise<string | null> {
+    await tick();
+    return this.live(key)?.value ?? null;
+  }
+
+  async setex(key: string, ttl: number, value: string): Promise<"OK"> {
+    await tick();
     this.touched.add(key);
-    this.strings.set(key, value);
+    this.strings.set(key, { value, expiresAt: this.ttlAt(ttl) });
     return "OK";
   }
 
+  /** Supports both `SET k v EX t NX` and `SET k v EX t GET`. */
   async set(
     key: string,
     value: string,
     _ex: "EX",
-    _ttl: number,
-    nx: "NX",
-  ): Promise<"OK" | null> {
-    if (nx === "NX" && this.strings.has(key)) return null;
+    ttl: number,
+    mode: "NX" | "GET",
+  ): Promise<"OK" | string | null> {
+    await tick();
+    const existing = this.live(key);
+    if (mode === "NX") {
+      if (existing) return null;
+      this.touched.add(key);
+      this.strings.set(key, { value, expiresAt: this.ttlAt(ttl) });
+      return "OK";
+    }
+    // GET: return the previous value and install the new one, atomically.
+    const previous = existing?.value ?? null;
     this.touched.add(key);
-    this.strings.set(key, value);
-    return "OK";
+    this.strings.set(key, { value, expiresAt: this.ttlAt(ttl) });
+    return previous;
   }
 
   async zcard(key: string): Promise<number> {
-    return this.zsets.get(key)?.size ?? 0;
+    await tick();
+    return this.liveZset(key)?.members.size ?? 0;
   }
 
   private zaddSync(key: string, score: number, member: string): void {
     this.touched.add(key);
-    const set = this.zsets.get(key) ?? new Map<string, number>();
-    set.set(member, score);
-    this.zsets.set(key, set);
+    const z = this.liveZset(key) ?? { members: new Map<string, number>(), expiresAt: null };
+    z.members.set(member, score);
+    this.zsets.set(key, z);
   }
 
   private zremrangebyscoreSync(key: string, min: string, max: number): void {
-    const set = this.zsets.get(key);
-    if (!set) return;
+    const z = this.liveZset(key);
+    if (!z) return;
     const lo = min === "-inf" ? Number.NEGATIVE_INFINITY : Number(min);
-    for (const [member, score] of set) {
-      if (score >= lo && score <= max) set.delete(member);
+    for (const [member, score] of z.members) {
+      if (score >= lo && score <= max) z.members.delete(member);
     }
+  }
+
+  private expireSync(key: string, ttl: number): void {
+    const z = this.liveZset(key);
+    if (z) z.expiresAt = this.ttlAt(ttl);
+    const s = this.live(key);
+    if (s) s.expiresAt = this.ttlAt(ttl);
   }
 
   multi() {
@@ -95,13 +172,101 @@ class FakeRedis {
         ops.push(() => this.zremrangebyscoreSync(key, min, max));
         return chain;
       },
-      expire: (_key: string, _ttl: number) => chain,
+      expire: (key: string, ttl: number) => {
+        ops.push(() => this.expireSync(key, ttl));
+        return chain;
+      },
       exec: async () => {
+        await tick();
         for (const op of ops) op();
         return [];
       },
     };
     return chain;
+  }
+
+  /**
+   * JS mirror of ROLLING_STATS_LUA, executed under a lock so that — exactly
+   * like a real Lua script — no other eval can interleave with it.
+   */
+  async eval(_script: string, _numKeys: number, ...args: unknown[]): Promise<[string, string]> {
+    const run = async (): Promise<[string, string]> => {
+      await tick();
+      const key = String(args[0]);
+      const [latency, aMean, aVar, k, minSamples, minSd, devScale, needStreak, ttl] =
+        args.slice(1).map(Number);
+
+      this.touched.add(key);
+      const raw = this.live(key)?.value ?? null;
+
+      let ewma: number | null = null;
+      let ewvar = 0;
+      let count = 1;
+      let streak = 0;
+      if (raw !== null) {
+        try {
+          const s = JSON.parse(raw);
+          if (s && typeof s === "object" && Number.isFinite(Number(s.ewma))) {
+            ewma = Number(s.ewma);
+            ewvar = Number(s.ewvar) || 0;
+            count = Number(s.count) || 1;
+            streak = Number(s.streak) || 0;
+          }
+        } catch {
+          // Corrupt entry — treated as a cache miss, same as the Lua pcall.
+        }
+      }
+
+      const write = (v: Record<string, number>) => {
+        this.strings.set(key, {
+          value: JSON.stringify(v),
+          expiresAt: this.ttlAt(ttl!),
+        });
+      };
+
+      if (ewma === null) {
+        write({ ewma: latency!, ewvar: 0, count: 1, streak: 0 });
+        return ["0", "0"];
+      }
+
+      const diff = latency! - ewma;
+      const dev = Math.abs(diff) / devScale!;
+      const sd = Math.max(Math.sqrt(ewvar), minSd!);
+      const band = k! * sd;
+
+      const eligible = count >= minSamples!;
+      const out = eligible && dev > band;
+
+      let fired = 0;
+      if (out) {
+        streak += 1;
+        if (streak >= needStreak!) {
+          fired = 1;
+          streak = 0;
+        }
+      } else {
+        streak = 0;
+      }
+
+      let vdiff = diff;
+      if (eligible) {
+        const cap = band * devScale!;
+        if (Math.abs(diff) > cap) vdiff = diff >= 0 ? cap : -cap;
+      }
+
+      const baseline = ewma;
+      write({
+        ewma: ewma + aMean! * diff,
+        ewvar: (1 - aVar!) * (ewvar + aVar! * vdiff * vdiff),
+        count: count + 1,
+        streak,
+      });
+      return [String(fired), String(baseline)];
+    };
+
+    const result = this.lock.then(run, run);
+    this.lock = result.catch(() => undefined);
+    return result;
   }
 }
 
@@ -123,8 +288,8 @@ async function test(name: string, fn: () => Promise<void>): Promise<void> {
 /** Builds a service with a controllable clock, starting at a fixed epoch. */
 function build(startMs = 1_700_000_000_000) {
   const prisma = new FakePrisma();
-  const redis = new FakeRedis();
   let clock = startMs;
+  const redis = new FakeRedis(() => clock);
   const service = new AnomalyDetectionService(
     prisma as never,
     redis as never,
@@ -188,6 +353,32 @@ async function latencySpikeTests(): Promise<void> {
     },
   );
 
+  await test("a large isolated outlier reports once, not once per ping", async () => {
+    // Worth being precise about what the consecutive-sample rule does and does
+    // not buy, because it is easy to assume it suppresses one-ping outliers.
+    //
+    // It does not. A 9x outlier drags the EWMA a long way (100 -> 340), and the
+    // baseline then lags for several pings, so the *recovery* pings read as
+    // out-of-band too. The streak re-arms and would fire every second ping all
+    // the way back down. What the consecutive rule actually suppresses is
+    // marginal noise crossings, where the EWMA barely moves and the next sample
+    // lands back inside the band (see the jitter case below).
+    //
+    // The cooldown is what bounds the recovery tail to a single row — which is
+    // exactly the flood this event type previously had no defence against.
+    const { prisma, service } = build();
+    for (let i = 0; i < 12; i++) await service.evaluate(MONITOR_ID, 100, "UP");
+
+    await service.evaluate(MONITOR_ID, 900, "UP"); // the outlier
+    for (let i = 0; i < 15; i++) await service.evaluate(MONITOR_ID, 100, "UP");
+
+    assert.equal(
+      prisma.events.length,
+      1,
+      `the outlier and its recovery tail are one event, got ${prisma.events.length}`,
+    );
+  });
+
   await test("does not fire during warmup, before MIN_SAMPLES", async () => {
     const { prisma, service } = build();
     // A spike on the 3rd ping: real deviation, but no trustworthy baseline yet.
@@ -205,32 +396,6 @@ async function latencySpikeTests(): Promise<void> {
     assert.equal(prisma.events.length, 0, "jitter should not be an anomaly");
   });
 
-  await test("a large isolated outlier reports once, not once per ping", async () => {
-    // Worth being precise about what the consecutive-sample rule does and does
-    // not buy, because it is easy to assume it suppresses one-ping outliers.
-    //
-    // It does not. A 9x outlier drags the EWMA a long way (100 -> 340), and the
-    // baseline then lags for several pings, so the *recovery* pings read as
-    // out-of-band too. The streak re-arms and would fire every second ping all
-    // the way back down. What the consecutive rule actually suppresses is
-    // marginal noise crossings, where the EWMA barely moves and the next sample
-    // lands back inside the band.
-    //
-    // The cooldown is what bounds the recovery tail to a single row — which is
-    // exactly the flood this event type previously had no defence against.
-    const { prisma, service } = build();
-    for (let i = 0; i < 12; i++) await service.evaluate(MONITOR_ID, 100, "UP");
-
-    await service.evaluate(MONITOR_ID, 900, "UP"); // the outlier
-    for (let i = 0; i < 15; i++) await service.evaluate(MONITOR_ID, 100, "UP");
-
-    assert.equal(
-      prisma.events.length,
-      1,
-      `the outlier and its recovery tail are one event, got ${prisma.events.length}`,
-    );
-  });
-
   await test("a sustained shift fires once, then adapts", async () => {
     const { prisma, service } = build();
     for (let i = 0; i < 12; i++) await service.evaluate(MONITOR_ID, 100, "UP");
@@ -242,6 +407,7 @@ async function latencySpikeTests(): Promise<void> {
       "a step change is one anomaly, not one per ping",
     );
   });
+
 }
 
 // ─── 2. Flapping ──────────────────────────────────────────────────────────────
@@ -314,6 +480,7 @@ async function flappingTests(): Promise<void> {
       "no transitions should be recorded",
     );
   });
+
 }
 
 // ─── 3. DOWN ping with null latency ───────────────────────────────────────────
@@ -369,7 +536,52 @@ async function nullLatencyTests(): Promise<void> {
   });
 }
 
-// ─── 4. Redis key isolation ───────────────────────────────────────────────────
+// ─── 4. Concurrency ───────────────────────────────────────────────────────────
+
+async function concurrencyTests(): Promise<void> {
+  console.log("\nConcurrency (overlapping evaluations for one monitor)");
+
+  await test("overlapping pings do not lose a rolling-stats update", async () => {
+    const { redis, service } = build();
+
+    // Seed the baseline, then fire 20 evaluations that all overlap in flight —
+    // a retried job, or a second worker replica. A GET-then-SETEX pair loses
+    // updates here; a single atomic script does not.
+    await service.evaluate(MONITOR_ID, 100, "UP");
+    await Promise.all(
+      Array.from({ length: 20 }, () => service.evaluate(MONITOR_ID, 100, "UP")),
+    );
+
+    const raw = await redis.get(`rolling_stats:${MONITOR_ID}`);
+    assert.ok(raw !== null, "rolling_stats should exist");
+    const stats = JSON.parse(raw!) as { count: number };
+    assert.equal(
+      stats.count,
+      21,
+      `every ping should be folded in exactly once, got count=${stats.count}`,
+    );
+  });
+
+  await test("overlapping pings do not double-count one transition", async () => {
+    const { redis, service } = build();
+
+    // Establish UP, then deliver five concurrent DOWN evaluations. They all
+    // describe the *same* transition, so exactly one should be recorded:
+    // `SET flap_last DOWN GET` lets only the first caller observe "UP".
+    await service.evaluate(MONITOR_ID, 100, "UP");
+    await Promise.all(
+      Array.from({ length: 5 }, () => service.evaluate(MONITOR_ID, null, "DOWN")),
+    );
+
+    assert.equal(
+      await redis.zcard(`flap_window:${MONITOR_ID}`),
+      1,
+      "one status change must produce one transition, not one per caller",
+    );
+  });
+}
+
+// ─── 5. Redis key isolation ───────────────────────────────────────────────────
 
 async function keyIsolationTests(): Promise<void> {
   console.log("\nRedis key isolation");
@@ -385,7 +597,7 @@ async function keyIsolationTests(): Promise<void> {
       latencyMs: 100,
       checkedAt: new Date(1_700_000_000_000).toISOString(),
     });
-    redis.strings.set(cacheKey, cached);
+    redis.strings.set(cacheKey, { value: cached, expiresAt: null });
 
     // Drive a full workload: warmup, a spike, and enough flapping to flag.
     for (let i = 0; i < 12; i++) {
@@ -400,7 +612,7 @@ async function keyIsolationTests(): Promise<void> {
     }
 
     assert.equal(
-      redis.strings.get(cacheKey),
+      redis.strings.get(cacheKey)?.value,
       cached,
       "the current_status cache entry was modified",
     );
@@ -450,6 +662,7 @@ async function main(): Promise<void> {
   await latencySpikeTests();
   await flappingTests();
   await nullLatencyTests();
+  await concurrencyTests();
   await keyIsolationTests();
 
   console.log(

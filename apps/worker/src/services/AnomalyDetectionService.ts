@@ -61,13 +61,112 @@ const FLAP_THRESHOLD = 3;
 
 type PingStatus = "UP" | "DOWN";
 
-interface RollingStats {
-  ewma: number;
-  ewvar: number;
-  count: number;
-  /** Consecutive out-of-band samples seen so far. */
-  streak: number;
-}
+/**
+ * The spike gate's tuning, exported so `calibrate:anomaly` can measure the real
+ * false-positive rate against a real Redis rather than re-declaring constants
+ * that would then be free to drift from the ones actually in force.
+ */
+export const ANOMALY_TUNING = {
+  ALPHA_MEAN,
+  ALPHA_VAR,
+  SPIKE_K,
+  DEVIATION_SCALE,
+  MIN_SAMPLES,
+  MIN_SD_MS,
+  SPIKE_CONSECUTIVE,
+  STATS_TTL_SECONDS,
+  SPIKE_COOLDOWN_SECONDS,
+} as const;
+
+/**
+ * Atomic EWMA/EW-variance read-modify-write.
+ *
+ * This runs server-side as a single Lua invocation because the sequence is
+ * read → compute → write on one key: as two round-trips it loses updates
+ * whenever two evaluations for the same monitor overlap (a retried job, or a
+ * second worker replica), and anomaly_events has no unique constraint that
+ * would catch the duplicate row that results.
+ *
+ * KEYS[1] rolling_stats:{monitorId}
+ * ARGV    latency, alphaMean, alphaVar, k, minSamples, minSd, devScale,
+ *         needStreak, ttl
+ * Returns [fired ("0"|"1"), baseline] — baseline is the pre-update EWMA, as a
+ * string because Redis truncates Lua numbers to integers on the way out.
+ */
+export const ROLLING_STATS_LUA = `
+local raw        = redis.call('GET', KEYS[1])
+local latency    = tonumber(ARGV[1])
+local aMean      = tonumber(ARGV[2])
+local aVar       = tonumber(ARGV[3])
+local k          = tonumber(ARGV[4])
+local minSamples = tonumber(ARGV[5])
+local minSd      = tonumber(ARGV[6])
+local devScale   = tonumber(ARGV[7])
+local needStreak = tonumber(ARGV[8])
+local ttl        = tonumber(ARGV[9])
+
+local ewma, ewvar, count, streak
+if raw then
+  local ok, s = pcall(cjson.decode, raw)
+  -- A corrupt entry is treated as a cache miss and rebuilt from this ping.
+  if ok and type(s) == 'table' and tonumber(s.ewma) then
+    ewma  = tonumber(s.ewma)
+    ewvar = tonumber(s.ewvar) or 0
+    count = tonumber(s.count) or 1
+    streak = tonumber(s.streak) or 0
+  end
+end
+
+if ewma == nil then
+  redis.call('SET', KEYS[1],
+    cjson.encode({ewma = latency, ewvar = 0, count = 1, streak = 0}), 'EX', ttl)
+  return {'0', '0'}
+end
+
+local diff = latency - ewma
+local dev  = math.abs(diff) / devScale
+local sd   = math.sqrt(ewvar)
+if sd < minSd then sd = minSd end
+local band = k * sd
+
+local eligible = count >= minSamples
+local out = false
+if eligible and dev > band then out = true end
+
+local fired = 0
+if out then
+  streak = streak + 1
+  if streak >= needStreak then
+    fired = 1
+    streak = 0
+  end
+else
+  streak = 0
+end
+
+-- Winsorize the variance contribution: clamp an out-of-band sample to the band
+-- before folding it in. Otherwise the first spike ping inflates the variance so
+-- much that it opens the band wider than its own follow-up, and the consecutive
+-- requirement can never be met — measured detection power for a 3x spike drops
+-- from 100% to 34% without this clamp.
+local vdiff = diff
+if eligible then
+  local cap = band * devScale
+  if math.abs(diff) > cap then
+    if diff >= 0 then vdiff = cap else vdiff = -cap end
+  end
+end
+
+local baseline = ewma
+local newEwma  = ewma + aMean * diff
+local newEwvar = (1 - aVar) * (ewvar + aVar * vdiff * vdiff)
+
+redis.call('SET', KEYS[1],
+  cjson.encode({ewma = newEwma, ewvar = newEwvar, count = count + 1, streak = streak}),
+  'EX', ttl)
+
+return {tostring(fired), tostring(baseline)}
+`;
 
 /**
  * Statistical anomaly detection over ping results.
@@ -115,54 +214,22 @@ export class AnomalyDetectionService {
     monitorId: string,
     latencyMs: number,
   ): Promise<void> {
-    const key = `rolling_stats:${monitorId}`;
-    const stats = await this.readStats(key);
+    const [firedRaw, baselineRaw] = (await this.redis.eval(
+      ROLLING_STATS_LUA,
+      1,
+      `rolling_stats:${monitorId}`,
+      latencyMs,
+      ALPHA_MEAN,
+      ALPHA_VAR,
+      SPIKE_K,
+      MIN_SAMPLES,
+      MIN_SD_MS,
+      DEVIATION_SCALE,
+      SPIKE_CONSECUTIVE,
+      STATS_TTL_SECONDS,
+    )) as [string, string];
 
-    if (stats === null) {
-      await this.writeStats(key, {
-        ewma: latencyMs,
-        ewvar: 0,
-        count: 1,
-        streak: 0,
-      });
-      return;
-    }
-
-    // Score the new sample against the baseline as it stands *before* this
-    // sample is folded in — otherwise the spike partly explains itself.
-    const diff = latencyMs - stats.ewma;
-    const deviation = Math.abs(diff) / DEVIATION_SCALE;
-    const ewsd = Math.max(Math.sqrt(stats.ewvar), MIN_SD_MS);
-    const band = SPIKE_K * ewsd;
-
-    const eligible = stats.count >= MIN_SAMPLES;
-    const outOfBand = eligible && deviation > band;
-
-    let streak = outOfBand ? stats.streak + 1 : 0;
-    const isSpike = outOfBand && streak >= SPIKE_CONSECUTIVE;
-    if (isSpike) streak = 0;
-
-    // Winsorize the variance contribution: clamp an out-of-band sample to the
-    // band before folding it in. Otherwise the first spike ping inflates the
-    // variance so much that it opens the band wider than its own follow-up, and
-    // the consecutive requirement can never be met — measured detection power
-    // for a 3x spike drops from 100% to 34% without this clamp.
-    let varDiff = diff;
-    if (eligible) {
-      const cap = band * DEVIATION_SCALE;
-      if (Math.abs(diff) > cap) varDiff = diff >= 0 ? cap : -cap;
-    }
-
-    // Update unconditionally, including on a spike. That is what keeps a
-    // sustained shift from firing forever: the baseline adapts to the new level.
-    await this.writeStats(key, {
-      ewma: stats.ewma + ALPHA_MEAN * diff,
-      ewvar: (1 - ALPHA_VAR) * (stats.ewvar + ALPHA_VAR * varDiff * varDiff),
-      count: stats.count + 1,
-      streak,
-    });
-
-    if (!isSpike) return;
+    if (firedRaw !== "1") return;
 
     // Same debounce shape as flapping: a degraded service keeps producing
     // out-of-band pings, and each one would otherwise write its own row.
@@ -179,7 +246,7 @@ export class AnomalyDetectionService {
       monitorId,
       AnomalyType.LATENCY_SPIKE,
       latencyMs,
-      stats.ewma,
+      Number(baselineRaw),
     );
   }
 
@@ -190,8 +257,17 @@ export class AnomalyDetectionService {
     const lastKey = `flap_last:${monitorId}`;
     const windowKey = `flap_window:${monitorId}`;
 
-    const last = await this.redis.get(lastKey);
-    await this.redis.setex(lastKey, STATS_TTL_SECONDS, status);
+    // SET ... GET (Redis 6.2+) makes the compare-and-set atomic: it returns the
+    // previous value and installs the new one in one command. As a separate
+    // GET then SETEX, two overlapping evaluations for the same monitor both
+    // read the old status and each count the same transition.
+    const last = (await this.redis.set(
+      lastKey,
+      status,
+      "EX",
+      STATS_TTL_SECONDS,
+      "GET",
+    )) as string | null;
 
     // No previous status, or no change: nothing transitioned.
     if (last === null || last === status) return;
@@ -203,6 +279,7 @@ export class AnomalyDetectionService {
     // back into the process to find the cutoff, and a plain counter with a TTL
     // would reset the entire window at once instead of ageing entries out
     // individually.
+    //
     await this.redis
       .multi()
       .zadd(windowKey, nowMs, `${nowMs}:${status}`)
@@ -215,9 +292,8 @@ export class AnomalyDetectionService {
 
     // Once a monitor is flapping it keeps transitioning, and every subsequent
     // transition would still be over threshold. Emit one event per window.
-    const cooldownKey = `flap_alerted:${monitorId}`;
     const claimed = await this.redis.set(
-      cooldownKey,
+      `flap_alerted:${monitorId}`,
       "1",
       "EX",
       FLAP_WINDOW_SECONDS,
@@ -231,30 +307,6 @@ export class AnomalyDetectionService {
       transitions,
       FLAP_THRESHOLD,
     );
-  }
-
-  private async readStats(key: string): Promise<RollingStats | null> {
-    const raw = await this.redis.get(key);
-    if (raw === null) return null;
-    try {
-      const parsed = JSON.parse(raw) as Partial<RollingStats>;
-      if (typeof parsed.ewma !== "number") return null;
-      return {
-        ewma: parsed.ewma,
-        ewvar: parsed.ewvar ?? 0,
-        count: parsed.count ?? 1,
-        // Entries written before the consecutive-sample rule existed have no
-        // streak; they simply start a fresh one.
-        streak: parsed.streak ?? 0,
-      };
-    } catch {
-      // Corrupt entry — treat as a cache miss and rebuild from this ping.
-      return null;
-    }
-  }
-
-  private async writeStats(key: string, stats: RollingStats): Promise<void> {
-    await this.redis.setex(key, STATS_TTL_SECONDS, JSON.stringify(stats));
   }
 
   private async recordEvent(
