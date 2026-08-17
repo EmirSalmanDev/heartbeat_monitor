@@ -1,19 +1,31 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Sentinel — infrastructure plan
+# Sentinel — build & infrastructure plan
 #
-# SCOPE: this workflow is READ-ONLY against cloud resources. It runs fmt,
-# init -backend=false, validate, and plan. There is deliberately no `apply`,
-# no image build/push, and no SSH deploy step.
+# Two jobs with deliberately different trust levels:
 #
-# It never runs automatically. `workflow_dispatch` only — a human starts it.
-# Adding an apply job later means adding a job with `environment:` set to a
-# protected GitHub Environment with required reviewers, so the run pauses for
-# approval before touching anything.
+#   build  — runs AUTOMATICALLY on push to main. Builds multi-arch images and
+#            pushes them to GHCR. Produces artifacts only; it never touches the
+#            running instance or any cloud resource, so it needs no gate.
+#
+#   plan   — NEVER runs automatically. workflow_dispatch only, and additionally
+#            gated on a protected GitHub Environment. Read-only against the
+#            tenancy: fmt, validate, plan. No apply.
+#
+# There is still NO deploy/apply job. Adding one means a job with `environment:`
+# set to a protected Environment with required reviewers, so the run pauses for
+# human approval before anything is provisioned or restarted.
 # ─────────────────────────────────────────────────────────────────────────────
 
-name: Infrastructure Plan
+name: Build & Infrastructure Plan
 
 on:
+  push:
+    branches: [main]
+    # Docs-only pushes should not burn ~30 min of emulated ARM build time.
+    paths-ignore:
+      - "**/*.md"
+      - "infra/terraform/**"
+      - ".github/workflows/**"
   workflow_dispatch:
     inputs:
       image_tag:
@@ -21,22 +33,125 @@ on:
         required: false
         default: "latest"
 
-# Read-only token. Nothing here needs write access to the repo or packages.
+# Least privilege at the workflow level; `build` widens this for itself only.
 permissions:
   contents: read
-
-concurrency:
-  group: terraform-plan-prod
-  cancel-in-progress: false
 
 env:
   TF_VERSION: "1.9.8"
   WORKING_DIR: infra/terraform/environments/prod
+  REGISTRY: ghcr.io
 
 jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # build — automatic, no approval gate
+  # ───────────────────────────────────────────────────────────────────────────
+  build:
+    name: build ${{ matrix.image }} (multi-arch)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write # scoped to this job: only `build` may push to GHCR
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            dockerfile: apps/api/Dockerfile
+          - image: worker
+            dockerfile: apps/worker/Dockerfile
+          - image: web
+            dockerfile: apps/web/Dockerfile
+
+    concurrency:
+      group: build-${{ matrix.image }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # linux/arm64 is the deployment target (OCI Ampere A1 is aarch64) and is
+      # built here under QEMU emulation on an amd64 runner. This is the slow
+      # part — pnpm install + tsc emulated runs roughly 5-10x native. If it
+      # becomes painful, the fix is native ARM runners: split into a per-arch
+      # matrix with runs-on ubuntu-24.04-arm and merge with `docker buildx
+      # imagetools create`. Free for public repos, paid plans for private.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # metadata-action lowercases the image name for us — GHCR rejects
+      # uppercase paths, and the owner here is "EmirSalmanDev".
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/sentinel-${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+            type=ref,event=branch
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # Keeps the manifest list to the two real platforms. Default
+          # provenance adds unknown/unknown entries that confuse `docker
+          # manifest inspect` and the Compose pull on the instance.
+          provenance: false
+
+      - name: Summarise
+        run: |
+          {
+            echo "### sentinel-${{ matrix.image }}"
+            echo "Platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # plan — manual only, read-only against the tenancy
+  # ───────────────────────────────────────────────────────────────────────────
   plan:
     name: terraform plan (prod)
     runs-on: ubuntu-latest
+
+    # Belt and braces: the `push` trigger above must never start this job.
+    # Without this guard, adding the trigger for `build` would silently make
+    # terraform plan run automatically too.
+    if: github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: read
+
+    concurrency:
+      group: terraform-plan-prod
+      cancel-in-progress: false
 
     # Gate even the plan behind a GitHub Environment. Plan needs real read
     # credentials against the tenancy, so the secrets live here and approval
