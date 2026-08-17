@@ -21,6 +21,40 @@
 import assert from "node:assert/strict";
 import { AnomalyDetectionService } from "../src/services/AnomalyDetectionService.js";
 
+// ─── Deterministic RNG ────────────────────────────────────────────────────────
+// Seeded so CI gets the same numbers every run; Gaussian because that is the
+// distribution the detector's 3-sigma gate is calibrated against.
+
+function makeGauss(seed: number): () => number {
+  let a = seed >>> 0;
+  const uniform = () => {
+    a += 0x6d2b79f5;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  let spare: number | null = null;
+  return () => {
+    if (spare !== null) {
+      const s = spare;
+      spare = null;
+      return s;
+    }
+    let u = 0;
+    let v = 0;
+    let s = 0;
+    do {
+      u = uniform() * 2 - 1;
+      v = uniform() * 2 - 1;
+      s = u * u + v * v;
+    } while (s >= 1 || s === 0);
+    const mul = Math.sqrt((-2 * Math.log(s)) / s);
+    spare = v * mul;
+    return u * mul;
+  };
+}
+
 // ─── Fakes ────────────────────────────────────────────────────────────────────
 
 interface RecordedEvent {
@@ -388,13 +422,29 @@ async function latencySpikeTests(): Promise<void> {
     assert.equal(prisma.events.length, 0, "should stay silent during warmup");
   });
 
-  await test("ordinary jitter never fires", async () => {
-    const { prisma, service } = build();
-    for (let i = 0; i < 40; i++) {
-      await service.evaluate(MONITOR_ID, 100 + (i % 5) - 2, "UP");
-    }
-    assert.equal(prisma.events.length, 0, "jitter should not be an anomaly");
-  });
+  await test(
+    "randomized jitter (sigma=25ms) never fires over 1200 pings",
+    async () => {
+      // The point of this case is to be *capable* of catching a miscalibrated
+      // gate. The old version used a deterministic 5ms-range sawtooth that sat
+      // below MIN_SD_MS by construction, so it stayed silent no matter how
+      // trigger-happy the detector was. Real Gaussian jitter well above the
+      // floor is what actually exercises the sigma calibration: at the intended
+      // 3-sigma the expected event count here is ~0.01, whereas the previous
+      // ~2.4-sigma gate would have produced dozens.
+      const { prisma, service, advance } = build();
+      const gauss = makeGauss(20250817);
+      for (let i = 0; i < 1200; i++) {
+        await service.evaluate(MONITOR_ID, 250 + 25 * gauss(), "UP");
+        advance(60_000); // realistic interval, and long enough to clear cooldown
+      }
+      assert.equal(
+        prisma.events.length,
+        0,
+        `ordinary jitter should not be an anomaly, got ${prisma.events.length} event(s)`,
+      );
+    },
+  );
 
   await test("a sustained shift fires once, then adapts", async () => {
     const { prisma, service } = build();
@@ -408,6 +458,31 @@ async function latencySpikeTests(): Promise<void> {
     );
   });
 
+  await test("cooldown suppresses repeats, and lifts once it expires", async () => {
+    const { prisma, service, advance } = build();
+    for (let i = 0; i < 12; i++) await service.evaluate(MONITOR_ID, 100, "UP");
+
+    // Drive a sustained degradation for a long stretch inside one cooldown.
+    for (let i = 0; i < 20; i++) {
+      await service.evaluate(MONITOR_ID, 900, "UP");
+      advance(10_000); // 200s total, well inside the 600s cooldown
+    }
+    assert.equal(
+      prisma.events.length,
+      1,
+      `cooldown should hold it at 1, got ${prisma.events.length}`,
+    );
+
+    // Past the cooldown, a fresh degradation is allowed to report again.
+    advance(600_001);
+    for (let i = 0; i < 12; i++) await service.evaluate(MONITOR_ID, 100, "UP");
+    for (let i = 0; i < 6; i++) await service.evaluate(MONITOR_ID, 5000, "UP");
+    assert.equal(
+      prisma.events.length,
+      2,
+      `a new event should fire after the cooldown expires, got ${prisma.events.length}`,
+    );
+  });
 }
 
 // ─── 2. Flapping ──────────────────────────────────────────────────────────────
@@ -467,21 +542,6 @@ async function flappingTests(): Promise<void> {
     );
   });
 
-  await test("two transitions in the same millisecond both count", async () => {
-    // The zset member used to be `${nowMs}:${status}`, so a second transition
-    // landing in the same millisecond overwrote the first instead of adding to
-    // it. The clock is deliberately not advanced here.
-    const { redis, service } = build();
-    for (const status of ["UP", "DOWN", "UP", "DOWN", "UP"] as const) {
-      await service.evaluate(MONITOR_ID, status === "UP" ? 100 : null, status);
-    }
-    assert.equal(
-      await redis.zcard(`flap_window:${MONITOR_ID}`),
-      4,
-      "all four same-millisecond transitions should be distinct members",
-    );
-  });
-
   await test("a stable monitor records no transitions", async () => {
     const { prisma, redis, service, advance } = build();
     for (let i = 0; i < 20; i++) {
@@ -496,6 +556,20 @@ async function flappingTests(): Promise<void> {
     );
   });
 
+  await test("two transitions in the same millisecond both count", async () => {
+    // The zset member used to be `${nowMs}:${status}`, so a second transition
+    // landing in the same millisecond overwrote the first instead of adding to
+    // it. The clock is deliberately not advanced here.
+    const { redis, service } = build();
+    for (const status of ["UP", "DOWN", "UP", "DOWN", "UP"] as const) {
+      await service.evaluate(MONITOR_ID, status === "UP" ? 100 : null, status);
+    }
+    assert.equal(
+      await redis.zcard(`flap_window:${MONITOR_ID}`),
+      4,
+      "all four same-millisecond transitions should be distinct members",
+    );
+  });
 }
 
 // ─── 3. DOWN ping with null latency ───────────────────────────────────────────
