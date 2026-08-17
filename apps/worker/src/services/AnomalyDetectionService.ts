@@ -174,8 +174,21 @@ return {tostring(fired), tostring(baseline)}
  * Detection and storage only: the sole effect of a detection is an AnomalyEvent
  * row. Nothing is sent anywhere and nothing downstream consumes these rows yet.
  *
- * Redis keys are namespaced separately from the `current_status:{monitorId}`
- * cache-aside entry that PingService writes, so the two never interact:
+ * ── Reading the anomaly_events table ────────────────────────────────────────
+ * `value` and `baseline` are deliberately generic columns whose meaning depends
+ * on `type`, so every consumer has to branch on it:
+ *
+ *   LATENCY_SPIKE — value    = the observed latency, in ms
+ *                   baseline = the EWMA latency before this ping, in ms
+ *   FLAPPING      — value    = the number of status transitions in the window
+ *                   baseline = FLAP_THRESHOLD, the count that was exceeded
+ *
+ * So a FLAPPING row's `value` is a count, not a latency: charting the column
+ * across types without branching plots milliseconds against transitions.
+ *
+ * ── Redis keys ──────────────────────────────────────────────────────────────
+ * Namespaced separately from the `current_status:{monitorId}` cache-aside entry
+ * that PingService writes, so the two never interact:
  *   rolling_stats:{monitorId}  — string, JSON EWMA/EW-variance state
  *   spike_alerted:{monitorId}  — string, LATENCY_SPIKE cooldown marker
  *   flap_window:{monitorId}    — sorted set, one member per status transition
@@ -280,9 +293,14 @@ export class AnomalyDetectionService {
     // would reset the entire window at once instead of ageing entries out
     // individually.
     //
+    // The member carries a random suffix because `${nowMs}:${status}` collides
+    // for two transitions landing in the same millisecond — zadd would overwrite
+    // rather than append, silently undercounting. The score stays the raw
+    // timestamp, which is all the window logic reads.
+    const member = `${nowMs}:${status}:${this.uniqueSuffix()}`;
     await this.redis
       .multi()
-      .zadd(windowKey, nowMs, `${nowMs}:${status}`)
+      .zadd(windowKey, nowMs, member)
       .zremrangebyscore(windowKey, "-inf", nowMs - FLAP_WINDOW_MS)
       .expire(windowKey, FLAP_WINDOW_SECONDS)
       .exec();
@@ -307,6 +325,11 @@ export class AnomalyDetectionService {
       transitions,
       FLAP_THRESHOLD,
     );
+  }
+
+  /** Short random suffix; only has to be unique within one millisecond. */
+  private uniqueSuffix(): string {
+    return Math.random().toString(36).slice(2, 10);
   }
 
   private async recordEvent(

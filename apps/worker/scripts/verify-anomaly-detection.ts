@@ -467,6 +467,21 @@ async function flappingTests(): Promise<void> {
     );
   });
 
+  await test("two transitions in the same millisecond both count", async () => {
+    // The zset member used to be `${nowMs}:${status}`, so a second transition
+    // landing in the same millisecond overwrote the first instead of adding to
+    // it. The clock is deliberately not advanced here.
+    const { redis, service } = build();
+    for (const status of ["UP", "DOWN", "UP", "DOWN", "UP"] as const) {
+      await service.evaluate(MONITOR_ID, status === "UP" ? 100 : null, status);
+    }
+    assert.equal(
+      await redis.zcard(`flap_window:${MONITOR_ID}`),
+      4,
+      "all four same-millisecond transitions should be distinct members",
+    );
+  });
+
   await test("a stable monitor records no transitions", async () => {
     const { prisma, redis, service, advance } = build();
     for (let i = 0; i < 20; i++) {
