@@ -39,9 +39,10 @@ model Monitor {
   createdAt    DateTime      @default(now()) @map("created_at")
   updatedAt    DateTime      @updatedAt @map("updated_at")
 
-  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  checks Check[]
-  alerts Alert[]
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  checks    Check[]
+  alerts    Alert[]
+  anomalies AnomalyEvent[]
 
   @@index([userId])
   @@map("monitors")
@@ -87,4 +88,26 @@ model Alert {
 
   @@index([monitorId])
   @@map("alerts")
+}
+
+// ─── AnomalyEvent ─────────────────────────────────────────────────────────────
+
+enum AnomalyType {
+  LATENCY_SPIKE
+  FLAPPING
+}
+
+model AnomalyEvent {
+  id         String      @id @default(cuid())
+  monitorId  String      @map("monitor_id")
+  type       AnomalyType
+  value      Float
+  baseline   Float
+  detectedAt DateTime    @default(now()) @map("detected_at")
+
+  monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  // Check ile aynı desen: monitör detayında son anomalileri hızlı çekmek için
+  @@index([monitorId, detectedAt(sort: Desc)])
+  @@map("anomaly_events")
 }
