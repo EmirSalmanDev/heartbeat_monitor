@@ -93,7 +93,12 @@ write_files:
       # Postgres volume with an empty password.
       ExecStartPre=/usr/local/bin/sentinel-preflight
       ExecStart=/usr/bin/docker compose pull
-      ExecStart=/usr/bin/docker compose up -d --remove-orphans
+      # --no-build is load-bearing. Every app service keeps a `build:` key for
+      # local development, and Compose treats it as a fallback: on a failed
+      # pull, `up` builds from source instead of failing. No source tree exists
+      # at /opt/sentinel, so that fallback only turns "image not found" into a
+      # confusing build error. `pull_policy: always` does not prevent it.
+      ExecStart=/usr/bin/docker compose up -d --remove-orphans --no-build
       ExecStop=/usr/bin/docker compose down
       TimeoutStartSec=0
 
