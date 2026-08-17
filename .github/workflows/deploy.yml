@@ -135,11 +135,28 @@ jobs:
             console.log(`ok: ${NAME} defines ${SCRIPT} -> ${pkg.scripts[SCRIPT]}`);
           '
 
+      # The generated Prisma client is gitignored, so a fresh checkout does not
+      # have it, and nothing in `pnpm install` creates it — there is no
+      # postinstall hook. It used not to matter: PrismaClient appeared only in
+      # type position, so the transpiler erased the `@sentinel/db` import
+      # entirely and the script never resolved the package at runtime.
+      #
+      # That stopped being true once AnomalyDetectionService started using the
+      # generated AnomalyType enum instead of a hand-written string union.
+      # `AnomalyType.LATENCY_SPIKE` is a value reference, so the import now
+      # survives transpilation and resolves at runtime — which failed with
+      # ERR_MODULE_NOT_FOUND on @sentinel/db/generated/client/index.js.
+      #
+      # `prisma generate` reads prisma/schema.prisma and writes the client. It
+      # does not connect to the datasource, so this needs no DATABASE_URL and no
+      # database service — verified by running it in a clean clone with the
+      # variable unset and nothing listening. Keep it that way: if this step
+      # ever appears to need a live database, something else is wrong.
+      - name: Generate Prisma client
+        run: pnpm --filter @sentinel/db exec prisma generate
+
       # Needs no database, Redis, or secrets: the script substitutes in-process
-      # fakes for both clients and never opens a connection. It also does not
-      # need `prisma generate` — PrismaClient and Redis appear only in type
-      # position, so the transpiler drops both imports. Both confirmed by
-      # running it with no env vars and with packages/db/generated removed.
+      # fakes for both clients and never opens a connection.
       #
       # No `continue-on-error` and no `|| true`: a non-zero exit from any check
       # fails this step, which fails the job, which blocks `build`.
