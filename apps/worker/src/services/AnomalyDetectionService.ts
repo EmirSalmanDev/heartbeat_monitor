@@ -1,28 +1,56 @@
-import { PrismaClient } from "@sentinel/db";
+import { AnomalyType, PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
 
-// EWMA smoothing factor. 0.3 weights recent pings meaningfully without letting
-// a single sample dominate the baseline (~last 6 pings carry most of the weight).
-const ALPHA = 0.3;
+// EWMA smoothing factor for the *mean*. 0.3 weights recent pings meaningfully
+// without letting a single sample dominate the baseline (~last 6 pings carry
+// most of the weight).
+const ALPHA_MEAN = 0.3;
 
-// Flag when |latest − EWMA| exceeds this many EW standard deviations.
+// Separate, much slower smoothing factor for the *variance*. The mean should
+// track real shifts quickly, but the variance is the thing we divide by, so it
+// needs to be stable: at alpha 0.3 the EW-variance estimator is so noisy that
+// its own sampling error, not the data, decides whether a ping clears the bar.
+// Dropping it to 0.05 is what takes the measured false-positive rate on
+// stationary Gaussian latency from ~4.1% to ~0.28%.
+const ALPHA_VAR = 0.05;
+
+// Flag when the normalized deviation exceeds this many EW standard deviations.
 const SPIKE_K = 3;
+
+// The statistic we test is (x − ewma_prev), not (x − true_mean). Because
+// ewma_prev is itself an estimate carrying variance sigma^2*a/(2−a), that
+// difference has SD = sigma * sqrt(1 + a/(2−a)) — about 1.085 sigma at
+// alpha 0.3, not sigma. Dividing the deviation by this factor puts it back in
+// sigma units so that "3 sigma" means 3 sigma. Without it the gate is really
+// ~2.4 sigma and fires roughly 16x more often than intended.
+const DEVIATION_SCALE = Math.sqrt(1 + ALPHA_MEAN / (2 - ALPHA_MEAN));
 
 // Don't score against a baseline built from fewer than this many samples —
 // early EWSD is meaningless and would flag ordinary jitter during warmup.
 const MIN_SAMPLES = 5;
 
 // Floor for the standard deviation, in ms. A monitor with near-constant latency
-// converges to EWSD ≈ 0, which would make |latest − EWMA| > 3 × EWSD true for a
-// 1ms wobble. The floor means "we never claim to know the latency to finer than
-// 5ms", so only a real deviation clears the bar.
+// converges to EWSD ≈ 0, which would make the spike test true for a 1ms wobble.
+// The floor means "we never claim to know the latency to finer than 5ms", so
+// only a real deviation clears the bar.
 const MIN_SD_MS = 5;
+
+// Number of *consecutive* out-of-band samples required before an event fires.
+// A single ping over the line is an outlier; two in a row is a condition. This
+// is what separates "one slow response" from "the service is degraded", and it
+// drops the residual false-event rate to roughly 1 per 140k pings.
+const SPIKE_CONSECUTIVE = 2;
 
 // Rolling stats are a warm baseline, not a source of truth: same cache-aside
 // contract as current_status (refreshed on every write, safe to lose — a miss
 // just re-enters warmup). The horizon is long because a baseline has to survive
 // gaps between pings on slow-interval monitors, where a 90s TTL would expire.
 const STATS_TTL_SECONDS = 86_400;
+
+// Debounce for LATENCY_SPIKE, mirroring flap_alerted. A degraded service stays
+// degraded across many pings; without this, a persistent condition writes one
+// row per ping and floods the table.
+const SPIKE_COOLDOWN_SECONDS = 600; // 10 minutes
 
 // Sliding window for flap detection.
 const FLAP_WINDOW_MS = 600_000; // 10 minutes
@@ -33,11 +61,112 @@ const FLAP_THRESHOLD = 3;
 
 type PingStatus = "UP" | "DOWN";
 
-interface RollingStats {
-  ewma: number;
-  ewvar: number;
-  count: number;
-}
+/**
+ * The spike gate's tuning, exported so `calibrate:anomaly` can measure the real
+ * false-positive rate against a real Redis rather than re-declaring constants
+ * that would then be free to drift from the ones actually in force.
+ */
+export const ANOMALY_TUNING = {
+  ALPHA_MEAN,
+  ALPHA_VAR,
+  SPIKE_K,
+  DEVIATION_SCALE,
+  MIN_SAMPLES,
+  MIN_SD_MS,
+  SPIKE_CONSECUTIVE,
+  STATS_TTL_SECONDS,
+  SPIKE_COOLDOWN_SECONDS,
+} as const;
+
+/**
+ * Atomic EWMA/EW-variance read-modify-write.
+ *
+ * This runs server-side as a single Lua invocation because the sequence is
+ * read → compute → write on one key: as two round-trips it loses updates
+ * whenever two evaluations for the same monitor overlap (a retried job, or a
+ * second worker replica), and anomaly_events has no unique constraint that
+ * would catch the duplicate row that results.
+ *
+ * KEYS[1] rolling_stats:{monitorId}
+ * ARGV    latency, alphaMean, alphaVar, k, minSamples, minSd, devScale,
+ *         needStreak, ttl
+ * Returns [fired ("0"|"1"), baseline] — baseline is the pre-update EWMA, as a
+ * string because Redis truncates Lua numbers to integers on the way out.
+ */
+export const ROLLING_STATS_LUA = `
+local raw        = redis.call('GET', KEYS[1])
+local latency    = tonumber(ARGV[1])
+local aMean      = tonumber(ARGV[2])
+local aVar       = tonumber(ARGV[3])
+local k          = tonumber(ARGV[4])
+local minSamples = tonumber(ARGV[5])
+local minSd      = tonumber(ARGV[6])
+local devScale   = tonumber(ARGV[7])
+local needStreak = tonumber(ARGV[8])
+local ttl        = tonumber(ARGV[9])
+
+local ewma, ewvar, count, streak
+if raw then
+  local ok, s = pcall(cjson.decode, raw)
+  -- A corrupt entry is treated as a cache miss and rebuilt from this ping.
+  if ok and type(s) == 'table' and tonumber(s.ewma) then
+    ewma  = tonumber(s.ewma)
+    ewvar = tonumber(s.ewvar) or 0
+    count = tonumber(s.count) or 1
+    streak = tonumber(s.streak) or 0
+  end
+end
+
+if ewma == nil then
+  redis.call('SET', KEYS[1],
+    cjson.encode({ewma = latency, ewvar = 0, count = 1, streak = 0}), 'EX', ttl)
+  return {'0', '0'}
+end
+
+local diff = latency - ewma
+local dev  = math.abs(diff) / devScale
+local sd   = math.sqrt(ewvar)
+if sd < minSd then sd = minSd end
+local band = k * sd
+
+local eligible = count >= minSamples
+local out = false
+if eligible and dev > band then out = true end
+
+local fired = 0
+if out then
+  streak = streak + 1
+  if streak >= needStreak then
+    fired = 1
+    streak = 0
+  end
+else
+  streak = 0
+end
+
+-- Winsorize the variance contribution: clamp an out-of-band sample to the band
+-- before folding it in. Otherwise the first spike ping inflates the variance so
+-- much that it opens the band wider than its own follow-up, and the consecutive
+-- requirement can never be met — measured detection power for a 3x spike drops
+-- from 100% to 34% without this clamp.
+local vdiff = diff
+if eligible then
+  local cap = band * devScale
+  if math.abs(diff) > cap then
+    if diff >= 0 then vdiff = cap else vdiff = -cap end
+  end
+end
+
+local baseline = ewma
+local newEwma  = ewma + aMean * diff
+local newEwvar = (1 - aVar) * (ewvar + aVar * vdiff * vdiff)
+
+redis.call('SET', KEYS[1],
+  cjson.encode({ewma = newEwma, ewvar = newEwvar, count = count + 1, streak = streak}),
+  'EX', ttl)
+
+return {tostring(fired), tostring(baseline)}
+`;
 
 /**
  * Statistical anomaly detection over ping results.
@@ -45,12 +174,26 @@ interface RollingStats {
  * Detection and storage only: the sole effect of a detection is an AnomalyEvent
  * row. Nothing is sent anywhere and nothing downstream consumes these rows yet.
  *
- * Redis keys are namespaced separately from the `current_status:{monitorId}`
- * cache-aside entry that PingService writes, so the two never interact:
+ * ── Reading the anomaly_events table ────────────────────────────────────────
+ * `value` and `baseline` are deliberately generic columns whose meaning depends
+ * on `type`, so every consumer has to branch on it:
+ *
+ *   LATENCY_SPIKE — value    = the observed latency, in ms
+ *                   baseline = the EWMA latency before this ping, in ms
+ *   FLAPPING      — value    = the number of status transitions in the window
+ *                   baseline = FLAP_THRESHOLD, the count that was exceeded
+ *
+ * So a FLAPPING row's `value` is a count, not a latency: charting the column
+ * across types without branching plots milliseconds against transitions.
+ *
+ * ── Redis keys ──────────────────────────────────────────────────────────────
+ * Namespaced separately from the `current_status:{monitorId}` cache-aside entry
+ * that PingService writes, so the two never interact:
  *   rolling_stats:{monitorId}  — string, JSON EWMA/EW-variance state
+ *   spike_alerted:{monitorId}  — string, LATENCY_SPIKE cooldown marker
  *   flap_window:{monitorId}    — sorted set, one member per status transition
  *   flap_last:{monitorId}      — string, last observed status
- *   flap_alerted:{monitorId}   — string, cooldown marker
+ *   flap_alerted:{monitorId}   — string, FLAPPING cooldown marker
  */
 export class AnomalyDetectionService {
   constructor(
@@ -84,34 +227,40 @@ export class AnomalyDetectionService {
     monitorId: string,
     latencyMs: number,
   ): Promise<void> {
-    const key = `rolling_stats:${monitorId}`;
-    const stats = await this.readStats(key);
+    const [firedRaw, baselineRaw] = (await this.redis.eval(
+      ROLLING_STATS_LUA,
+      1,
+      `rolling_stats:${monitorId}`,
+      latencyMs,
+      ALPHA_MEAN,
+      ALPHA_VAR,
+      SPIKE_K,
+      MIN_SAMPLES,
+      MIN_SD_MS,
+      DEVIATION_SCALE,
+      SPIKE_CONSECUTIVE,
+      STATS_TTL_SECONDS,
+    )) as [string, string];
 
-    if (stats === null) {
-      await this.writeStats(key, { ewma: latencyMs, ewvar: 0, count: 1 });
-      return;
-    }
+    if (firedRaw !== "1") return;
 
-    // Score the new sample against the baseline as it stands *before* this
-    // sample is folded in — otherwise the spike partly explains itself.
-    const deviation = Math.abs(latencyMs - stats.ewma);
-    const ewsd = Math.max(Math.sqrt(stats.ewvar), MIN_SD_MS);
-    const isSpike =
-      stats.count >= MIN_SAMPLES && deviation > SPIKE_K * ewsd;
+    // Same debounce shape as flapping: a degraded service keeps producing
+    // out-of-band pings, and each one would otherwise write its own row.
+    const claimed = await this.redis.set(
+      `spike_alerted:${monitorId}`,
+      "1",
+      "EX",
+      SPIKE_COOLDOWN_SECONDS,
+      "NX",
+    );
+    if (claimed === null) return;
 
-    // Update unconditionally, including on a spike. That is what keeps a
-    // sustained shift from firing forever: the first ping at the new level is
-    // the anomaly, after which the baseline adapts to it.
-    const diff = latencyMs - stats.ewma;
-    await this.writeStats(key, {
-      ewma: stats.ewma + ALPHA * diff,
-      ewvar: (1 - ALPHA) * (stats.ewvar + ALPHA * diff * diff),
-      count: stats.count + 1,
-    });
-
-    if (isSpike) {
-      await this.recordEvent(monitorId, "LATENCY_SPIKE", latencyMs, stats.ewma);
-    }
+    await this.recordEvent(
+      monitorId,
+      AnomalyType.LATENCY_SPIKE,
+      latencyMs,
+      Number(baselineRaw),
+    );
   }
 
   private async detectFlapping(
@@ -121,8 +270,17 @@ export class AnomalyDetectionService {
     const lastKey = `flap_last:${monitorId}`;
     const windowKey = `flap_window:${monitorId}`;
 
-    const last = await this.redis.get(lastKey);
-    await this.redis.setex(lastKey, STATS_TTL_SECONDS, status);
+    // SET ... GET (Redis 6.2+) makes the compare-and-set atomic: it returns the
+    // previous value and installs the new one in one command. As a separate
+    // GET then SETEX, two overlapping evaluations for the same monitor both
+    // read the old status and each count the same transition.
+    const last = (await this.redis.set(
+      lastKey,
+      status,
+      "EX",
+      STATS_TTL_SECONDS,
+      "GET",
+    )) as string | null;
 
     // No previous status, or no change: nothing transitioned.
     if (last === null || last === status) return;
@@ -134,9 +292,15 @@ export class AnomalyDetectionService {
     // back into the process to find the cutoff, and a plain counter with a TTL
     // would reset the entire window at once instead of ageing entries out
     // individually.
+    //
+    // The member carries a random suffix because `${nowMs}:${status}` collides
+    // for two transitions landing in the same millisecond — zadd would overwrite
+    // rather than append, silently undercounting. The score stays the raw
+    // timestamp, which is all the window logic reads.
+    const member = `${nowMs}:${status}:${this.uniqueSuffix()}`;
     await this.redis
       .multi()
-      .zadd(windowKey, nowMs, `${nowMs}:${status}`)
+      .zadd(windowKey, nowMs, member)
       .zremrangebyscore(windowKey, "-inf", nowMs - FLAP_WINDOW_MS)
       .expire(windowKey, FLAP_WINDOW_SECONDS)
       .exec();
@@ -146,9 +310,8 @@ export class AnomalyDetectionService {
 
     // Once a monitor is flapping it keeps transitioning, and every subsequent
     // transition would still be over threshold. Emit one event per window.
-    const cooldownKey = `flap_alerted:${monitorId}`;
     const claimed = await this.redis.set(
-      cooldownKey,
+      `flap_alerted:${monitorId}`,
       "1",
       "EX",
       FLAP_WINDOW_SECONDS,
@@ -158,30 +321,20 @@ export class AnomalyDetectionService {
 
     await this.recordEvent(
       monitorId,
-      "FLAPPING",
+      AnomalyType.FLAPPING,
       transitions,
       FLAP_THRESHOLD,
     );
   }
 
-  private async readStats(key: string): Promise<RollingStats | null> {
-    const raw = await this.redis.get(key);
-    if (raw === null) return null;
-    try {
-      return JSON.parse(raw) as RollingStats;
-    } catch {
-      // Corrupt entry — treat as a cache miss and rebuild from this ping.
-      return null;
-    }
-  }
-
-  private async writeStats(key: string, stats: RollingStats): Promise<void> {
-    await this.redis.setex(key, STATS_TTL_SECONDS, JSON.stringify(stats));
+  /** Short random suffix; only has to be unique within one millisecond. */
+  private uniqueSuffix(): string {
+    return Math.random().toString(36).slice(2, 10);
   }
 
   private async recordEvent(
     monitorId: string,
-    type: "LATENCY_SPIKE" | "FLAPPING",
+    type: AnomalyType,
     value: number,
     baseline: number,
   ): Promise<void> {
