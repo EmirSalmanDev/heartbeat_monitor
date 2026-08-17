@@ -3,17 +3,22 @@
 #
 # Three jobs with deliberately different trust levels:
 #
-#   verify — runs AUTOMATICALLY on push to main, and gates `build`. Pure
+#   verify — runs on pull_request AND on push to main, and gates `build`. Pure
 #            in-process checks against fakes: no database, no Redis, no
-#            secrets, no network. Cheap enough to block the image build on.
+#            secrets, no network. That is what makes it safe to run on PRs from
+#            forks, where the token is read-only and no secret is exposed.
 #
-#   build  — runs AUTOMATICALLY on push to main. Builds multi-arch images and
-#            pushes them to GHCR. Produces artifacts only; it never touches the
-#            running instance or any cloud resource, so it needs no gate.
+#   build  — runs AUTOMATICALLY on push to main ONLY. Never on pull_request: it
+#            holds `packages: write` and pushes images to GHCR, which no PR
+#            branch — least of all a fork's — should be able to trigger.
 #
 #   plan   — NEVER runs automatically. workflow_dispatch only, and additionally
 #            gated on a protected GitHub Environment. Read-only against the
 #            tenancy: fmt, validate, plan. No apply.
+#
+# Every job carries an explicit `github.event_name` guard. The `on:` block is
+# the union of all three jobs' triggers, so without those guards, adding a
+# trigger for one job silently starts the others.
 #
 # There is still NO deploy/apply job. Adding one means a job with `environment:`
 # set to a protected Environment with required reviewers, so the run pauses for
@@ -30,6 +35,20 @@ on:
       - "**/*.md"
       - "infra/terraform/**"
       - ".github/workflows/**"
+  pull_request:
+    branches: [main]
+    # Deliberately NOT the same ignore list as `push` above.
+    #
+    # `.github/workflows/**` is missing here on purpose: on `push` it is ignored
+    # because a workflow edit changes no image, but on a PR that reasoning
+    # inverts — a PR that edits CI is exactly the one where CI must run, and it
+    # is the only chance to see the change execute before it lands on main.
+    #
+    # Docs and terraform stay ignored: `verify` is a worker-code check and says
+    # nothing about either.
+    paths-ignore:
+      - "**/*.md"
+      - "infra/terraform/**"
   workflow_dispatch:
     inputs:
       image_tag:
@@ -66,9 +85,9 @@ jobs:
   verify:
     name: verify (worker)
     runs-on: ubuntu-latest
-    # Same guard as `build`: this job exists to gate the image build, so it does
-    # not run on the workflow_dispatch path, which is for terraform plan only.
-    if: github.event_name == 'push'
+    # The only job that runs on PRs. Still excluded from workflow_dispatch,
+    # which is the terraform-plan path and has nothing to do with worker code.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
 
     permissions:
       contents: read # no packages, no secrets — see below
@@ -133,7 +152,13 @@ jobs:
   build:
     name: build ${{ matrix.image }} (multi-arch)
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+
+    # Belt and braces, the same way `plan` is guarded against the push trigger.
+    # The event check alone is what keeps a pull_request from ever reaching a
+    # job that holds `packages: write`. The ref check is the second layer: if
+    # the push trigger's `branches:` list is ever widened, this job still only
+    # publishes images from main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: verify
 
     permissions:
