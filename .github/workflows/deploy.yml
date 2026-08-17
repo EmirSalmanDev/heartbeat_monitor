@@ -1,7 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Sentinel — build & infrastructure plan
 #
-# Two jobs with deliberately different trust levels:
+# Three jobs with deliberately different trust levels:
+#
+#   verify — runs AUTOMATICALLY on push to main, and gates `build`. Pure
+#            in-process checks against fakes: no database, no Redis, no
+#            secrets, no network. Cheap enough to block the image build on.
 #
 #   build  — runs AUTOMATICALLY on push to main. Builds multi-arch images and
 #            pushes them to GHCR. Produces artifacts only; it never touches the
@@ -44,12 +48,93 @@ env:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
+  # verify — automatic, gates the image build
+  #
+  # A separate job rather than a step inside `build`, for three reasons:
+  #   1. `build` installs nothing on the runner — it is pure buildx, and every
+  #      dependency is installed inside the Dockerfile. A verify step there
+  #      would mean adding Node + corepack + a full pnpm install to a job that
+  #      currently needs none of it.
+  #   2. `build` is a 3-way matrix (api/web/worker). A step would run these
+  #      worker checks three times, twice for images they say nothing about.
+  #   3. As its own job it gates all three images at once and reports as its
+  #      own check, instead of being buried in one matrix leg's log.
+  #
+  # The cost is that image builds wait on it. That is the intended trade: a
+  # `latest` tag should not reach GHCR from code that fails verification.
+  # ───────────────────────────────────────────────────────────────────────────
+  verify:
+    name: verify (worker)
+    runs-on: ubuntu-latest
+    # Same guard as `build`: this job exists to gate the image build, so it does
+    # not run on the workflow_dispatch path, which is for terraform plan only.
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read # no packages, no secrets — see below
+
+    concurrency:
+      group: verify-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20 # matches engines.node and the Dockerfile's node:20
+
+      # corepack after setup-node, so the shims point at the Node installed
+      # above rather than the runner's preinstalled one. Version comes from the
+      # "packageManager" field, same as the Dockerfiles.
+      - name: Enable pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm --filter` exits 0 when the filter matches no package, and `pnpm
+      # run` exits 0 when the script does not exist ("None of the selected
+      # packages has a ... script"). Either typo would therefore produce a green
+      # job that ran nothing at all. Assert both names before relying on them.
+      - name: Assert the verify script exists
+        run: |
+          node -e '
+            const pkg = require("./apps/worker/package.json");
+            const NAME = "@sentinel/worker";
+            const SCRIPT = "verify:anomaly";
+            if (pkg.name !== NAME) {
+              throw new Error(`expected package name ${NAME}, found ${pkg.name}`);
+            }
+            if (!pkg.scripts || !pkg.scripts[SCRIPT]) {
+              throw new Error(`apps/worker/package.json has no "${SCRIPT}" script`);
+            }
+            console.log(`ok: ${NAME} defines ${SCRIPT} -> ${pkg.scripts[SCRIPT]}`);
+          '
+
+      # Needs no database, Redis, or secrets: the script substitutes in-process
+      # fakes for both clients and never opens a connection. It also does not
+      # need `prisma generate` — PrismaClient and Redis appear only in type
+      # position, so the transpiler drops both imports. Both confirmed by
+      # running it with no env vars and with packages/db/generated removed.
+      #
+      # No `continue-on-error` and no `|| true`: a non-zero exit from any check
+      # fails this step, which fails the job, which blocks `build`.
+      - name: Run anomaly detection checks
+        run: pnpm --filter @sentinel/worker verify:anomaly
+
+  # ───────────────────────────────────────────────────────────────────────────
   # build — automatic, no approval gate
   # ───────────────────────────────────────────────────────────────────────────
   build:
     name: build ${{ matrix.image }} (multi-arch)
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
+    needs: verify
 
     permissions:
       contents: read
