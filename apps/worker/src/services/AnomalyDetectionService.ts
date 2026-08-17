@@ -1,4 +1,4 @@
-import { PrismaClient } from "@sentinel/db";
+import { AnomalyType, PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
 
 // EWMA smoothing factor. 0.3 weights recent pings meaningfully without letting
@@ -110,7 +110,12 @@ export class AnomalyDetectionService {
     });
 
     if (isSpike) {
-      await this.recordEvent(monitorId, "LATENCY_SPIKE", latencyMs, stats.ewma);
+      await this.recordEvent(
+        monitorId,
+        AnomalyType.LATENCY_SPIKE,
+        latencyMs,
+        stats.ewma,
+      );
     }
   }
 
@@ -158,7 +163,7 @@ export class AnomalyDetectionService {
 
     await this.recordEvent(
       monitorId,
-      "FLAPPING",
+      AnomalyType.FLAPPING,
       transitions,
       FLAP_THRESHOLD,
     );
@@ -181,7 +186,7 @@ export class AnomalyDetectionService {
 
   private async recordEvent(
     monitorId: string,
-    type: "LATENCY_SPIKE" | "FLAPPING",
+    type: AnomalyType,
     value: number,
     baseline: number,
   ): Promise<void> {
