@@ -42,6 +42,8 @@ services:
   # Runs migrations once on startup then exits. API and Worker wait for it.
   migrate:
     container_name: sentinel_migrate
+    # Shares the API image — same Dockerfile, only the command differs.
+    image: ${REGISTRY:-ghcr.io/emirsalmandev}/sentinel-api:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -57,6 +59,7 @@ services:
   # ─── Express API ────────────────────────────────────────────────────────────
   api:
     container_name: sentinel_api
+    image: ${REGISTRY:-ghcr.io/emirsalmandev}/sentinel-api:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -77,6 +80,7 @@ services:
   # ─── BullMQ Worker ──────────────────────────────────────────────────────────
   worker:
     container_name: sentinel_worker
+    image: ${REGISTRY:-ghcr.io/emirsalmandev}/sentinel-worker:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
@@ -97,6 +101,7 @@ services:
   #   Stage 2 → dist/ dosyalarını nginx:alpine image'ına gömer
   nginx:
     container_name: sentinel_nginx
+    image: ${REGISTRY:-ghcr.io/emirsalmandev}/sentinel-web:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: apps/web/Dockerfile

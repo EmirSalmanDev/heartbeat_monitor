@@ -1,0 +1,130 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Sentinel — infrastructure plan
+#
+# SCOPE: this workflow is READ-ONLY against cloud resources. It runs fmt,
+# init -backend=false, validate, and plan. There is deliberately no `apply`,
+# no image build/push, and no SSH deploy step.
+#
+# It never runs automatically. `workflow_dispatch` only — a human starts it.
+# Adding an apply job later means adding a job with `environment:` set to a
+# protected GitHub Environment with required reviewers, so the run pauses for
+# approval before touching anything.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Infrastructure Plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to plan against"
+        required: false
+        default: "latest"
+
+# Read-only token. Nothing here needs write access to the repo or packages.
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-plan-prod
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.9.8"
+  WORKING_DIR: infra/terraform/environments/prod
+
+jobs:
+  plan:
+    name: terraform plan (prod)
+    runs-on: ubuntu-latest
+
+    # Gate even the plan behind a GitHub Environment. Plan needs real read
+    # credentials against the tenancy, so the secrets live here and approval
+    # rules on the environment apply before they are exposed to the job.
+    environment: prod-plan
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # fmt and validate need no credentials, so they run first and fail fast
+      # before anything touches the tenancy.
+      - name: terraform fmt -check
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform fmt -check -recursive ../..
+
+      - name: terraform init (no backend)
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform validate -no-color
+
+      # ── Credentialed steps ───────────────────────────────────────────────
+      # Passed through `env`, not interpolated into the script body: a secret
+      # expanded directly into `run:` is visible in the rendered command and
+      # breaks the runner's log masking if it contains shell metacharacters.
+      - name: Write API signing key
+        env:
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          install -m 0700 -d "$RUNNER_TEMP/oci"
+          printf '%s' "$OCI_PRIVATE_KEY" > "$RUNNER_TEMP/oci/key.pem"
+          chmod 0600 "$RUNNER_TEMP/oci/key.pem"
+
+      - name: terraform init (remote state)
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_ACCESS_KEY }}
+        run: terraform init -input=false
+
+      - name: terraform plan
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OCI_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OCI_S3_SECRET_ACCESS_KEY }}
+          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_region: ${{ secrets.OCI_REGION }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          TF_VAR_ssh_ingress_cidr: ${{ secrets.SSH_INGRESS_CIDR }}
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          TF_VAR_image_tag: ${{ inputs.image_tag }}
+        run: |
+          terraform plan \
+            -input=false \
+            -no-color \
+            -lock=false \
+            -var="private_key_path=$RUNNER_TEMP/oci/key.pem" \
+            -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Publish plan to job summary
+        if: always()
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          {
+            echo '## Terraform plan — prod'
+            echo '```terraform'
+            # Truncated: a full plan can exceed the 1MB summary limit.
+            head -c 900000 plan.txt || echo '(no plan produced)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The binary plan file is NOT uploaded as an artifact: it embeds resolved
+      # variable values, and plan artifacts are a well-known way to leak them.
+      - name: Upload plan (text)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod-txt
+          path: ${{ env.WORKING_DIR }}/plan.txt
+          retention-days: 7
