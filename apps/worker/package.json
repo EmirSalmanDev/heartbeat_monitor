@@ -13,6 +13,7 @@
     "@sentinel/shared": "workspace:*",
     "bullmq": "^5.1.1",
     "ioredis": "^5.3.2",
+    "pino": "^9.5.0",
     "prom-client": "^15.1.0",
     "dotenv": "^16.4.5"
   },

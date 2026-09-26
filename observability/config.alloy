@@ -1,0 +1,151 @@
+// Grafana Alloy — the single collector for both metrics and logs.
+//
+// Metrics: scrapes api + worker directly over sentinel_net, remote-writes to
+//          Prometheus. Nothing goes through nginx.
+// Logs:    tails the Docker log streams of api/worker/nginx, parses the pino
+//          JSON, and pushes to Loki.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// METRICS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Both endpoints are reachable by container name on sentinel_net. The API serves
+// /metrics from its main Express port; the worker has no Express app and serves
+// it from a dedicated node:http listener on 9091.
+prometheus.scrape "sentinel" {
+  targets = [
+    {
+      __address__      = "api:3001",
+      __metrics_path__ = "/metrics",
+      job              = "sentinel/api",
+      service          = "api",
+    },
+    {
+      __address__      = "worker:9091",
+      __metrics_path__ = "/metrics",
+      job              = "sentinel/worker",
+      service          = "worker",
+    },
+  ]
+
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    // Enabled on the Prometheus side by --web.enable-remote-write-receiver.
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOGS
+// ─────────────────────────────────────────────────────────────────────────────
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "15s"
+
+  filter {
+    name   = "status"
+    values = ["running"]
+  }
+}
+
+discovery.relabel "sentinel_containers" {
+  targets = discovery.docker.containers.targets
+
+  // Only the three application containers — not postgres/redis/prometheus/loki/
+  // alloy/grafana, whose logs are noise here.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/sentinel_(api|worker|nginx)"
+    action        = "keep"
+  }
+
+  // Docker reports names with a leading slash: "/sentinel_api" -> "sentinel_api".
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+    replacement   = "$1"
+    action        = "replace"
+  }
+
+  // "/sentinel_api" -> service_name="api". service_name is the label Loki treats
+  // as a service identifier in its UI.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/sentinel_(.*)"
+    target_label  = "service_name"
+    replacement   = "$1"
+    action        = "replace"
+  }
+}
+
+loki.source.docker "sentinel" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.sentinel_containers.output
+  refresh_interval = "15s"
+  forward_to       = [loki.process.sentinel.receiver]
+}
+
+loki.process "sentinel" {
+  forward_to = [loki.write.default.receiver]
+
+  // api and worker emit pino JSON. nginx does not — its access log is plain
+  // text. A non-JSON line simply yields an empty extracted map here; it is not
+  // dropped, so nginx logs still land in Loki, just without extracted fields.
+  stage.json {
+    expressions = {
+      level       = "level",
+      log_service = "service",
+      ts          = "time",
+      request_id  = "requestId",
+      execution_id = "executionId",
+      job_id      = "jobId",
+      monitor_id  = "monitorId",
+      route       = "route",
+      status_code = "statusCode",
+    }
+  }
+
+  // Stream labels — LOW cardinality only. Each distinct combination of these
+  // creates a separate Loki stream, so only bounded fields belong here.
+  stage.labels {
+    values = {
+      level   = "level",
+      service = "log_service",
+    }
+  }
+
+  // Correlation IDs are deliberately NOT labels: requestId is unique per request
+  // and would mint one stream per request. Structured metadata keeps them
+  // queryable/filterable in Grafana without touching the stream index.
+  stage.structured_metadata {
+    values = {
+      requestId   = "request_id",
+      executionId = "execution_id",
+      jobId       = "job_id",
+      monitorId   = "monitor_id",
+      route       = "route",
+      statusCode  = "status_code",
+    }
+  }
+
+  // pino writes ISO-8601 to `time`. action_on_failure = "skip" keeps Docker's own
+  // scrape timestamp for lines with no parseable `time` field — i.e. nginx.
+  stage.timestamp {
+    source            = "ts"
+    format            = "RFC3339"
+    action_on_failure = "skip"
+  }
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

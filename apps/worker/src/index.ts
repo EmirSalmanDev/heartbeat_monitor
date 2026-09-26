@@ -2,16 +2,17 @@ import "dotenv/config";
 import { createServer } from "node:http";
 import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
+import { logger } from "./lib/logger.js";
 import { metricsService } from "./container.js";
 
 const { worker } = await import("./processors/pingProcessor.js").catch(
   (err) => {
-    console.error("Failed to start ping processor:", err);
+    logger.fatal({ err }, "Failed to start ping processor");
     process.exit(1);
   },
 );
 
-console.log("Worker started — listening for ping jobs...");
+logger.info({ queue: "monitor-queue" }, "Worker started — listening for ping jobs");
 
 // Expose Prometheus metrics on a dedicated port so nginx can scrape it
 // without routing through the API. Port 9091 is reachable within sentinel_net.
@@ -26,20 +27,17 @@ const metricsServer = createServer(async (req, res) => {
   }
 });
 metricsServer.listen(METRICS_PORT, () => {
-  console.log(`[Worker] Metrics server listening on port ${METRICS_PORT}`);
+  logger.info({ port: METRICS_PORT }, "Metrics server listening");
 });
 
 const gracefulShutdown = async (signal: NodeJS.Signals) => {
-  console.log(`[Worker] ${signal} received — shutting down gracefully`);
+  logger.info({ signal }, "Shutting down gracefully");
   metricsServer.close();
   try {
     await worker.close();
-    console.log("[Worker] BullMQ worker closed");
+    logger.info("BullMQ worker closed");
   } catch (err) {
-    console.error(
-      "[Worker] Error closing BullMQ worker:",
-      (err as Error).message,
-    );
+    logger.error({ err }, "Error closing BullMQ worker");
   }
   await prisma.$disconnect();
   await redis.quit();

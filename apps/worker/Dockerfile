@@ -4,7 +4,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@9.15.9
 
 # Copy manifests (for caching)
 COPY pnpm-workspace.yaml ./
@@ -36,7 +36,7 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 # Install pnpm
-RUN npm install -g pnpm
+RUN npm install -g pnpm@9.15.9
 
 # Copy manifests from builder (deterministic)
 COPY --from=builder /app/package.json ./
@@ -55,7 +55,6 @@ COPY --from=builder /app/apps/worker/dist ./apps/worker/dist
 
 # Copy generated Prisma client and engine files
 COPY --from=builder /app/packages/db/generated ./packages/db/generated
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 
 # Start worker
 CMD ["node", "apps/worker/dist/index.js"]
