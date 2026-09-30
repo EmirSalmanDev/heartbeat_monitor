@@ -17,6 +17,13 @@ const connection = new IORedis(process.env.REDIS_URL!, {
   enableReadyCheck: false,
 });
 
+// Without a listener, ioredis's 'error' event is an uncaught exception that
+// crashes the process — every other Redis client in this codebase already
+// guards against this (see lib/redis.ts); this one was missing it.
+connection.on("error", (err) => {
+  logger.error({ err, component: "redis-bullmq" }, "BullMQ Redis connection error");
+});
+
 // Correlation: these are *repeatable* jobs, enqueued once when the monitor is
 // created and re-fired on a schedule forever, so job.id (`monitor-<id>`) is fixed
 // for the monitor's whole lifetime — it identifies which monitor, not which run.

@@ -188,7 +188,9 @@ services:
       - sentinel_net
 
   # ─── Grafana ────────────────────────────────────────────────────────────────
-  #   Prometheus + Loki are pre-provisioned as data sources; no UI setup needed.
+  #   Prometheus + Loki are pre-provisioned as data sources, and the Sentinel
+  #   Overview dashboard is pre-provisioned from observability/grafana/dashboards
+  #   (see provisioning/dashboards/dashboards.yml) — no UI setup needed.
   #   The UI is published to the host at localhost:3000 — a deliberate exception
   #   to the internal-only rule for the other observability services.
   grafana:
@@ -202,6 +204,7 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus

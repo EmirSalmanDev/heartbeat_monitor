@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express, { type Request, type Response, type NextFunction } from "express";
 import cookieParser from "cookie-parser";
+import { NotFoundError } from "@sentinel/shared";
 import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
 import { logger } from "./lib/logger.js";
@@ -72,6 +73,12 @@ app.get(
     res.send(await metricsService.getMetrics());
   }),
 );
+
+// No route matched — without this, Express's default HTML 404 page would
+// bypass the JSON error envelope every other error path uses.
+app.use((req: Request, _res: Response, next: NextFunction) => {
+  next(new NotFoundError(`Route ${req.method} ${req.originalUrl}`));
+});
 
 app.use(createErrorHandler(logger)); // global
 
