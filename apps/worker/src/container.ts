@@ -4,9 +4,15 @@
 
 import { prisma } from "./lib/prisma.js";
 import { redis } from "./lib/redis.js";
+import { logger } from "./lib/logger.js";
 import { MetricsService } from "./services/MetricsService.js";
 import { PingService } from "./services/PingService.js";
 
 export const metricsService = new MetricsService();
 
-export const pingService = new PingService(prisma, redis, metricsService);
+export const pingService = new PingService(
+  prisma,
+  redis,
+  metricsService,
+  logger,
+);

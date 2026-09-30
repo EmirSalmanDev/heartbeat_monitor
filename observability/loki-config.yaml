@@ -1,0 +1,62 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  path_prefix: /loki
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+
+# Single-node, local filesystem only — no S3/GCS/cloud object store.
+# Retention requires schema v13 + tsdb + a 24h index period; none of those three
+# are free to change independently.
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  filesystem:
+    directory: /loki/chunks
+  tsdb_shipper:
+    active_index_directory: /loki/index
+    cache_location: /loki/index_cache
+
+limits_config:
+  # ── RETENTION ─────────────────────────────────────────────────────────────
+  # How long logs are kept before the compactor deletes them. 336h = 14 days.
+  # This is the one knob to turn for disk usage — change it here and restart
+  # loki; nothing else in this file needs to change.
+  retention_period: 336h
+  # ──────────────────────────────────────────────────────────────────────────
+  # Required for the correlation IDs Alloy attaches as structured metadata.
+  allow_structured_metadata: true
+  volume_enabled: true
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+
+analytics:
+  reporting_enabled: false

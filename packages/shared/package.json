@@ -16,6 +16,7 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
+    "pino": "^9.5.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

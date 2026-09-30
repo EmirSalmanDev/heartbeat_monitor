@@ -13,7 +13,7 @@ import {
 export function createMonitorRouter(
   monitorService: MonitorService,
   authService: AuthService,
-) {
+): Router {
   const router = Router();
   const auth = createAuthMiddleware(authService);
 
@@ -31,7 +31,7 @@ export function createMonitorRouter(
     "/",
     asyncHandler(async (req, res) => {
       const data = CreateMonitorSchema.parse(req.body);
-      const monitor = await monitorService.create(data, req.userId);
+      const monitor = await monitorService.create(data, req.userId, req.log);
       res.status(201).json(ok(monitor));
     }),
   );
@@ -66,6 +66,7 @@ export function createMonitorRouter(
         req.params.id,
         req.userId,
         data,
+        req.log,
       );
       res.json(ok(monitor));
     }),
@@ -82,7 +83,7 @@ export function createMonitorRouter(
   router.delete(
     "/:id",
     asyncHandler(async (req, res) => {
-      await monitorService.delete(req.params.id, req.userId);
+      await monitorService.delete(req.params.id, req.userId, req.log);
       res.status(204).send();
     }),
   );

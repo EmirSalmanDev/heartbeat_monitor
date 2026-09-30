@@ -45,7 +45,9 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    command: ["sh", "-c", "cd /app/packages/db && npx prisma migrate deploy"]
+    # Pin the CLI: bare `npx prisma` resolves to the latest major (7.x), which
+    # cannot read this project's Prisma 6 schema.
+    command: ["sh", "-c", "cd /app/packages/db && npx --yes prisma@6.19.2 migrate deploy"]
     env_file: .env
     depends_on:
       postgres:
@@ -70,7 +72,7 @@ services:
       migrate:
         condition: service_completed_successfully
     expose:
-      - "3001"
+      - "3001"   # HTTP API + Prometheus /metrics
     networks:
       - sentinel_net
 
@@ -89,6 +91,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    expose:
+      - "9091"   # Prometheus /metrics (dedicated port — no Express app here)
     networks:
       - sentinel_net
 
@@ -110,9 +114,113 @@ services:
     networks:
       - sentinel_net
 
+  # ─── Prometheus ─────────────────────────────────────────────────────────────
+  #   Write receiver + TSDB + query API. It does NOT scrape api/worker itself —
+  #   Alloy scrapes them and remote-writes here, so targets live in one file.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: sentinel_prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      # Enables POST /api/v1/write. Off by default; this is the stable flag —
+      # the older --enable-feature=remote-write-receiver form is deprecated.
+      - "--web.enable-remote-write-receiver"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    expose:
+      - "9090"
+    networks:
+      - sentinel_net
+
+  # ─── Loki ───────────────────────────────────────────────────────────────────
+  #   Single-node, local filesystem storage. Retention (14d) is set in
+  #   observability/loki-config.yaml under limits_config.retention_period.
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: sentinel_loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ./observability/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    expose:
+      - "3100"
+    networks:
+      - sentinel_net
+
+  # ─── Grafana Alloy ──────────────────────────────────────────────────────────
+  #   Scrapes api:3001/metrics + worker:9091/metrics over sentinel_net and
+  #   remote-writes to prometheus; tails api/worker/nginx container logs and
+  #   pushes them to loki.
+  #
+  #   SECURITY: the Docker socket mount below grants this container effective
+  #   root on the host — anything that can talk to /var/run/docker.sock can start
+  #   a privileged container and escape. It is mounted :ro, but read-only on a
+  #   socket only prevents changing the socket file, NOT issuing write commands
+  #   through it. This is how Docker log discovery works, but treat the alloy
+  #   container as a trusted, host-privileged component, and pin its image tag.
+  alloy:
+    image: grafana/alloy:v1.6.1
+    container_name: sentinel_alloy
+    restart: unless-stopped
+    # Needs to be root to read /var/run/docker.sock (owned by root:docker).
+    user: root
+    command:
+      - "run"
+      - "--server.http.listen-addr=0.0.0.0:12345"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    volumes:
+      - ./observability/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+    depends_on:
+      - prometheus
+      - loki
+    ports:
+      # Alloy debug UI — component health, scrape target status, pipeline graph.
+      - "12345:12345"
+    networks:
+      - sentinel_net
+
+  # ─── Grafana ────────────────────────────────────────────────────────────────
+  #   Prometheus + Loki are pre-provisioned as data sources, and the Sentinel
+  #   Overview dashboard is pre-provisioned from observability/grafana/dashboards
+  #   (see provisioning/dashboards/dashboards.yml) — no UI setup needed.
+  #   The UI is published to the host at localhost:3000 — a deliberate exception
+  #   to the internal-only rule for the other observability services.
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: sentinel_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    ports:
+      - "3000:3000"
+    networks:
+      - sentinel_net
+
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:
+  loki_data:
+  alloy_data:
+  grafana_data:
 
 networks:
   sentinel_net:

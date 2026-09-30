@@ -9,6 +9,7 @@ import {
   type MonitorDto,
   type CheckDto,
   type UpdateMonitorInput,
+  type Logger,
 } from "@sentinel/shared";
 import { QueueService } from "./QueueService.js";
 
@@ -128,9 +129,14 @@ export class MonitorService {
 
   // --- PUBLIC METHODS ---
 
+  // `log` on the mutating methods is the caller's request-scoped logger, passed
+  // straight through to QueueService so scheduling lines carry the requestId of
+  // the request that triggered them. Optional: callers outside an HTTP request
+  // omit it and QueueService falls back to the app logger.
   async create(
     data: { name: string; url: string; intervalSecs: number },
     userId: string,
+    log?: Logger,
   ): Promise<MonitorDto> {
     const count = await this.prisma.monitor.count({ where: { userId } });
     if (count >= MAX_MONITORS_PER_USER) {
@@ -149,6 +155,7 @@ export class MonitorService {
       monitor.id,
       monitor.url,
       monitor.intervalSecs,
+      log,
     );
 
     return {
@@ -228,6 +235,7 @@ export class MonitorService {
     id: string,
     userId: string,
     data: UpdateMonitorInput,
+    log?: Logger,
   ): Promise<MonitorDto> {
     // Ownership check yerine tam monitor çek — eski intervalSecs lazım
     const existing = await this.prisma.monitor.findUnique({ where: { id } });
@@ -246,9 +254,14 @@ export class MonitorService {
       data.url !== undefined;
 
     if (shouldReschedule) {
-      await this.queue.removeMonitor(id, existing.intervalSecs);
+      await this.queue.removeMonitor(id, existing.intervalSecs, log);
       if (updated.status !== "PAUSED") {
-        await this.queue.scheduleMonitor(id, updated.url, updated.intervalSecs);
+        await this.queue.scheduleMonitor(
+          id,
+          updated.url,
+          updated.intervalSecs,
+          log,
+        );
       }
     }
 
@@ -333,12 +346,12 @@ export class MonitorService {
     return { checks, total };
   }
 
-  async delete(id: string, userId: string): Promise<void> {
+  async delete(id: string, userId: string, log?: Logger): Promise<void> {
     const existing = await this.prisma.monitor.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError("Monitor");
     if (existing.userId !== userId) throw new ForbiddenError();
 
-    await this.queue.removeMonitor(id, existing.intervalSecs);
+    await this.queue.removeMonitor(id, existing.intervalSecs, log);
     await this.prisma.monitor.delete({ where: { id } });
     await this.redis.del(`current_status:${id}`);
   }

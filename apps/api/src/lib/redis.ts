@@ -1,4 +1,5 @@
-import Redis from "ioredis";
+import { Redis } from "ioredis";
+import { logger } from "./logger.js";
 
 // Single ioredis instance shared by MonitorService (cache) and QueueService (BullMQ connection).
 // BullMQ requires its own connection — QueueService creates a separate ioredis instance
@@ -8,5 +9,5 @@ export const redis = new Redis(process.env.REDIS_URL!, {
 });
 
 redis.on("error", (err) => {
-  console.error("[Redis] Connection error:", err.message);
+  logger.error({ err, component: "redis" }, "Redis connection error");
 });

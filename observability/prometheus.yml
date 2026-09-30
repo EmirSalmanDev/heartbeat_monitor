@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: sentinel
+
+# No scrape_configs for api/worker on purpose.
+#
+# Alloy owns metrics collection (see observability/config.alloy) and pushes the
+# results here over remote-write, so scrape targets are defined in exactly one
+# place. Prometheus is a write receiver + TSDB + query API only.
+#
+# The receiver endpoint (/api/v1/write) is off by default and is enabled with the
+# --web.enable-remote-write-receiver flag on the command line in docker-compose.yml,
+# not from this file.

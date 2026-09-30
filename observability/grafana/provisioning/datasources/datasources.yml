@@ -1,0 +1,28 @@
+apiVersion: 1
+
+# Provisioned at startup — both data sources work on first boot with no UI setup.
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: sentinel-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+
+  - name: Loki
+    type: loki
+    uid: sentinel-loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      # Turns the requestId in a log line into a click-through. The correlation
+      # IDs arrive as structured metadata from Alloy, not as labels.
+      derivedFields:
+        - name: requestId
+          matcherType: label
+          matcherRegex: requestId
+          url: "${__value.raw}"

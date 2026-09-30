@@ -1,6 +1,10 @@
 import { PrismaClient } from "@sentinel/db";
 import { Redis } from "ioredis";
-import { pingWithFallback, type CurrentStatus } from "@sentinel/shared";
+import {
+  pingWithFallback,
+  type CurrentStatus,
+  type Logger,
+} from "@sentinel/shared";
 import { MetricsService } from "./MetricsService.js";
 
 export class PingService {
@@ -8,9 +12,24 @@ export class PingService {
     private prisma: PrismaClient,
     private redis: Redis,
     private metrics: MetricsService,
+    private logger: Logger,
   ) {}
 
-  async execute(monitorId: string, url: string): Promise<void> {
+  /**
+   * `parentLog` is the execution-scoped child built by pingProcessor (carries
+   * executionId + jobId), so every line below is traceable to a single run.
+   * Falls back to the app logger when called outside a job.
+   */
+  async execute(
+    monitorId: string,
+    url: string,
+    parentLog?: Logger,
+  ): Promise<void> {
+    // pingProcessor's child already binds monitorId (alongside executionId and
+    // jobId); re-binding it here would emit the key twice in the same JSON line.
+    const log = parentLog ?? this.logger.child({ monitorId });
+
+    log.debug({ url }, "Ping attempt started");
     const result = await pingWithFallback(url);
 
     // Persist result and use the returned Check record as the source of truth
@@ -26,6 +45,21 @@ export class PingService {
         checkedAt: result.checkedAt,
       },
     });
+
+    const outcome = {
+      url,
+      checkId: check.id,
+      result: result.result,
+      statusCode: result.statusCode ?? null,
+      latencyMs: result.latencyMs,
+    };
+
+    // A DOWN result is an individual failed ping attempt, not a crash — warn.
+    if (result.result === "UP") {
+      log.info(outcome, "Ping succeeded");
+    } else {
+      log.warn({ ...outcome, errorMsg: result.errorMsg ?? null }, "Ping failed");
+    }
 
     // Normalize to CurrentStatus DTO before caching.
     // JSON.stringify(check) would serialize checkedAt to an ISO string in the

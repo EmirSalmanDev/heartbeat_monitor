@@ -2,3 +2,4 @@ export * from "./types.js";
 export * from "./schemas.js";
 export * from "./errors.js";
 export * from "./pinger.js";
+export * from "./logger.js";
