@@ -247,7 +247,7 @@ docker exec sentinel_prometheus wget -qO- \
 - **Change every default secret** in `.env` before deploying anywhere but
   localhost: `POSTGRES_PASSWORD`, `JWT_SECRET`, `COOKIE_SECRET`, and
   `GRAFANA_ADMIN_PASSWORD` all ship as placeholders in `.env.example`.
-- **Don't publish `postgres` (5432) or `redis` (6379)** beyond localhost —
+- **Do not publish `postgres` (5432) or `redis` (6379)** beyond localhost —
   `docker-compose.yml` maps both straight to the host for local convenience.
   The same applies to the Alloy debug UI (12345) and Grafana (3000) in any
   shared or multi-tenant environment.
